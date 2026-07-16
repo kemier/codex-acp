@@ -303,8 +303,16 @@ export class CodexEventHandler {
         switch (event.item.type) {
             case "fileChange":
                 return await createFileChangeUpdate(event.item);
-            case "commandExecution": {
-                if (commandExecutionUsesTerminalOutput(event.item)) {
+           case "commandExecution": {
+               // Track background terminal processes for /ps
+               if (event.item.source === "unifiedExecStartup" || event.item.source === "unifiedExecInteraction") {
+                   const key = event.item.processId ?? event.item.id;
+                   this.sessionState.backgroundProcesses.set(key, {
+                       command: event.item.command,
+                       processId: event.item.processId,
+                   });
+               }
+               if (commandExecutionUsesTerminalOutput(event.item)) {
                     this.terminalCommandIds.add(event.item.id);
                 } else {
                     this.terminalCommandIds.delete(event.item.id);
@@ -362,8 +370,13 @@ export class CodexEventHandler {
                     rawInput: createMcpRawInput(event.item.server, event.item.tool, event.item.arguments),
                     rawOutput: createMcpRawOutput(event.item.result, event.item.error),
                 }
-            case "commandExecution":
-                return this.completeCommandExecutionEvent(event.item);
+           case "commandExecution":
+               // Remove from background processes tracking when completed
+               if (event.item.source === "unifiedExecStartup" || event.item.source === "unifiedExecInteraction") {
+                   const key = event.item.processId ?? event.item.id;
+                   this.sessionState.backgroundProcesses.delete(key);
+               }
+               return this.completeCommandExecutionEvent(event.item);
             case "imageView":
                 if (this.emittedImageViewItems.delete(event.item.id)) {
                     return null;

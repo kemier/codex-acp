@@ -113,6 +113,8 @@ export interface SessionState {
     goalRevision: number;
     sessionTitle: string | null;
     sessionTitleSource: "unset" | "fallback" | "explicit" | "unknown";
+    /** Background terminal processes tracked for the /ps command. */
+    backgroundProcesses: Map<string, { command: string; processId: string | null }>;
 }
 
 interface ActiveAuthState {
@@ -450,6 +452,7 @@ export class CodexAcpServer {
             goalRevision: 0,
             sessionTitle: null,
             sessionTitleSource: "sessionId" in request ? "unknown" : "unset",
+            backgroundProcesses: new Map(),
         };
         this.sessions.set(sessionId, sessionState);
         resumeSubscribed = false;
@@ -1064,6 +1067,7 @@ export class CodexAcpServer {
             goalRevision: 0,
             sessionTitle: null,
             sessionTitleSource: "unset",
+            backgroundProcesses: new Map(),
         };
         this.sessions.set(sessionId, sessionState);
         subscribed = false;
