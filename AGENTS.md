@@ -108,11 +108,11 @@ The build produces a single self-contained `dist/index.js` with no runtime depen
 
 ### Install to local bin
 
-From the `vscode-acp` repo (which has the install script):
+From the `codex-acp` repo:
 
 ```bash
-cd /workspace/git/ezennin/vscode-acp
-./scripts/install-codex-acp.sh
+cd /workspace/git/ezennin/codex-acp
+./scripts/install.sh
 ```
 
 This script:
@@ -148,8 +148,8 @@ The install script syncs to **both** locations to ensure the built version is us
 
 ```bash
 # 1. Build and install codex-acp
-cd /workspace/git/ezennin/vscode-acp
-./scripts/install-codex-acp.sh
+cd /workspace/git/ezennin/codex-acp
+./scripts/install.sh
 
 # 2. Build and install vscode-acp extension
 npm run package && npx vsce package && ./scripts/install-vscode-server.sh
