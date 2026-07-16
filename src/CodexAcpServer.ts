@@ -1619,8 +1619,23 @@ export class CodexAcpServer {
             prompt: params.prompt,
         });
         const sessionState = this.getSessionState(params.sessionId);
+        // Handle read-only slash commands (e.g. /ps, /status) before creating
+        // an ActivePrompt.  These commands don't start an LLM turn and are safe
+        // to execute even while another turn is in progress.  This mirrors the
+        // codex TUI where /ps, /status, /mcp etc. are dispatched immediately
+        // regardless of whether a turn is running.
+        const readOnlyResult = await this.availableCommands.tryHandleReadOnlyCommand(params.prompt, sessionState);
+        if (readOnlyResult.handled) {
+            logger.log("Prompt handled by a read-only command");
+            return {
+                stopReason: "end_turn",
+                usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+                _meta: this.buildQuotaMeta(sessionState),
+            };
+        }
         sessionState.currentTurnId = null;
         sessionState.lastTokenUsage = null;
+
         const activePrompt = this.trackActivePrompt(params.sessionId);
         let pendingTurnStart: PendingTurnStart | null = null;
         const ensurePendingTurnStart = (): PendingTurnStart => {

@@ -174,7 +174,9 @@ export class CodexCommands {
     }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
-        const firstBlock = prompt[0];
+        // Find the text block containing the slash command.
+        // Context blocks (resource_link, resource, image) may precede it.
+        const firstBlock = prompt.find(b => b.type === 'text');
         if (!firstBlock || firstBlock.type != "text") return null;
 
         const text = firstBlock.text.trim();
@@ -190,6 +192,39 @@ export class CodexCommands {
             name: name.toLowerCase(),
             rest: commandText.slice(name.length).trim(),
         };
+    }
+
+    /**
+     * Handle read-only slash commands that don't start an LLM turn.
+     * These can be safely executed even while another turn is in progress.
+     * Returns { handled: true } if the command was handled, { handled: false } otherwise.
+     */
+    async tryHandleReadOnlyCommand(
+        prompt: acp.ContentBlock[],
+        sessionState: SessionState,
+    ): Promise<CommandHandleResult> {
+        const command = this.parseCommand(prompt);
+        if (command === null) return { handled: false };
+        const commandName = command.name;
+        if (commandName.startsWith("$")) return { handled: false };
+
+        const sessionId = sessionState.sessionId;
+        switch (commandName) {
+            case "ps": {
+                const psSession = new ACPSessionConnection(this.connection, sessionId);
+                const psMessage = this.buildPsMessage(sessionState);
+                await psSession.update(createAgentTextMessageChunk(psMessage));
+                return { handled: true };
+            }
+            case "status": {
+                const session = new ACPSessionConnection(this.connection, sessionId);
+                const message = this.buildStatusMessage(sessionState);
+                await session.update(createAgentTextMessageChunk(message));
+                return { handled: true };
+            }
+            default:
+                return { handled: false };
+        }
     }
 
     async tryHandleCommand(
@@ -250,19 +285,19 @@ export class CodexCommands {
                 }, options);
                 return { handled: true, turnCompleted };
             }
-           case "status": {
-               const session = new ACPSessionConnection(this.connection, sessionId);
-               const message = this.buildStatusMessage(sessionState);
-               await session.update(createAgentTextMessageChunk(message));
-               return { handled: true };
-           }
-           case "ps": {
-               const psSession = new ACPSessionConnection(this.connection, sessionId);
-               const psMessage = this.buildPsMessage(sessionState);
-               await psSession.update(createAgentTextMessageChunk(psMessage));
-               return { handled: true };
-           }
-           case "logout": {
+            case "status": {
+                const session = new ACPSessionConnection(this.connection, sessionId);
+                const message = this.buildStatusMessage(sessionState);
+                await session.update(createAgentTextMessageChunk(message));
+                return { handled: true };
+            }
+            case "ps": {
+                const psSession = new ACPSessionConnection(this.connection, sessionId);
+                const psMessage = this.buildPsMessage(sessionState);
+                await psSession.update(createAgentTextMessageChunk(psMessage));
+                return { handled: true };
+            }
+            case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
                 await this.onLogout();
                 const session = new ACPSessionConnection(this.connection, sessionId);
