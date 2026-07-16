@@ -160,12 +160,17 @@ export class CodexCommands {
                     },
                 },
             },
-            {
-                name: "logout",
-                description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
-                input: null
-            }
-        ];
+           {
+               name: "logout",
+               description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
+               input: null
+           },
+           {
+               name: "ps",
+               description: "List background terminal processes.",
+               input: null
+           }
+       ];
     }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
@@ -245,13 +250,19 @@ export class CodexCommands {
                 }, options);
                 return { handled: true, turnCompleted };
             }
-            case "status": {
-                const session = new ACPSessionConnection(this.connection, sessionId);
-                const message = this.buildStatusMessage(sessionState);
-                await session.update(createAgentTextMessageChunk(message));
-                return { handled: true };
-            }
-            case "logout": {
+           case "status": {
+               const session = new ACPSessionConnection(this.connection, sessionId);
+               const message = this.buildStatusMessage(sessionState);
+               await session.update(createAgentTextMessageChunk(message));
+               return { handled: true };
+           }
+           case "ps": {
+               const psSession = new ACPSessionConnection(this.connection, sessionId);
+               const psMessage = this.buildPsMessage(sessionState);
+               await psSession.update(createAgentTextMessageChunk(psMessage));
+               return { handled: true };
+           }
+           case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
                 await this.onLogout();
                 const session = new ACPSessionConnection(this.connection, sessionId);
@@ -394,7 +405,16 @@ export class CodexCommands {
         await session.update(createAgentTextMessageChunk(`Command "/${name}" requires ${inputHint}.`));
     }
 
-    private buildStatusMessage(sessionState: SessionState): string {
+
+    private buildPsMessage(sessionState: SessionState): string {
+        const processes = Array.from(sessionState.backgroundProcesses.values());
+        if (processes.length === 0) {
+            return "No background terminals running.";
+        }
+        const lines = processes.map(p => `  - ${p.command}`);
+        return `Background terminals (${processes.length}):\n${lines.join("\n")}`;
+    }
+   private buildStatusMessage(sessionState: SessionState): string {
         const agentMode = sessionState.agentMode;
         const accountText = this.formatAccountInfo(sessionState.account);
         const tokenUsageText = this.formatTokenUsage(sessionState.totalTokenUsage);
