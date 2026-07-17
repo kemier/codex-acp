@@ -15,6 +15,14 @@
 - When updating discriminated-union/event `switch` statements, do not add a trailing fallback like `return null` only to satisfy TypeScript.
 - Handle each variant with an explicit `case`; if intentionally ignored, use an explicit no-op case.
 
+## Related Repositories
+
+| Repo | Path | Description |
+|---|---|---|
+| **vscode-acp** | `/workspace/git/ezennin/vscode-acp` | VS Code extension implementing ACP. Consumes this agent binary. Key file: `src/ui/ChatWebviewProvider.ts` (webview rendering, link parsing, session UI). |
+| **codex** | `/workspace/git/ezennin/codex` | Codex CLI core (Rust). The actual agent engine spawned as `codex app-server`. Key crate: `codex-rs/app-server/`. |
+| **ericai-proxy** | `/workspace/git/ezennin/ericai-proxy` | Rust proxy translating OpenAI Responses API ↔ Chat Completions API. Must flatten `ToolSpec::Namespace` tools into individual function tools. |
+
 ## Testing Guidelines
 
 - Tests live under `src/__tests__/` and use Vitest.
