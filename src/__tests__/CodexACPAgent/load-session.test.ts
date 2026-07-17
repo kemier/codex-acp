@@ -177,6 +177,32 @@ describe("CodexACPAgent - loadSession", () => {
                         },
                     ],
                 },
+                {
+                    id: "turn-2",
+                    itemsView: "full",
+                    status: "completed",
+                    error: null,
+                    startedAt: null,
+                    completedAt: null,
+                    durationMs: null,
+                    items: [
+                        {
+                            type: "userMessage",
+                            id: "item-user-2",
+                            clientId: null,
+                            content: [
+                                { type: "text", text: "Post-compaction question", text_elements: [] },
+                            ],
+                        },
+                        {
+                            type: "agentMessage",
+                            id: "item-agent-2",
+                            text: "Post-compaction answer!",
+                            phase: null,
+                            memoryCitation: null,
+                        },
+                    ],
+                },
             ],
         };
         const resumeThread: Thread = {

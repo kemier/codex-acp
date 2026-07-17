@@ -391,6 +391,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         goalRevision: 0,
         sessionTitle: null,
         sessionTitleSource: "unknown",
+        backgroundProcesses: new Map(),
         ...overrides,
     };
 }
