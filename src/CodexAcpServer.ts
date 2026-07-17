@@ -1097,20 +1097,33 @@ export class CodexAcpServer {
         const session = new ACPSessionConnection(this.connection, sessionId);
         const sessionState = this.getSessionState(sessionId);
         await this.publishThreadHistoryTitle(session, sessionState, thread);
-        const responseItemFallbackUpdates = await createResponseItemHistoryFallbackUpdates(
+        let responseItemFallbackUpdates = await createResponseItemHistoryFallbackUpdates(
             thread,
             sessionState.terminalOutputMode,
         );
 
         const threadUpdates: UpdateSessionEvent[] = [];
+        let sawCompaction = false;
         for (const turn of thread.turns) {
             for (const item of turn.items) {
+                // When we encounter a context compaction marker, all items before it
+                // (pre-compaction history) have been summarized and replaced. Discard
+                // all previously accumulated updates so the session/load replay only
+                // shows the compaction summary and post-compaction turns.
+                if (item.type === "contextCompaction") {
+                    threadUpdates.length = 0;
+                    // The raw-rollout fallback parser also contains pre-compaction items;
+                    // nullify it so mergeHistoryUpdates does not reintroduce them.
+                    responseItemFallbackUpdates = null;
+                    sawCompaction = true;
+                }
                 const updates = await this.createHistoryUpdates(item, sessionState);
                 threadUpdates.push(...updates);
             }
         }
 
-        const updates = responseItemFallbackUpdates
+        // After compaction, only replay post-compaction updates (no fallback merge).
+        const updates = (!sawCompaction && responseItemFallbackUpdates)
             ? mergeHistoryUpdates(responseItemFallbackUpdates, threadUpdates)
             : threadUpdates;
         for (const update of updates) {
@@ -1567,7 +1580,7 @@ export class CodexAcpServer {
             });
         }
         try {
-            await this.runWithProcessCheck(() => this.codexAcpClient.turnInterrupt({
+            const interruptResult = await this.runWithProcessCheck(() => this.codexAcpClient.turnInterrupt({
                 threadId: sessionState.sessionId,
                 turnId,
             }));
@@ -1896,8 +1909,10 @@ export class CodexAcpServer {
             return;
         }
 
-        // After turnInterrupt(), Codex will send turn/completed, which naturally completes awaitTurnCompleted().
-        await this.interruptSessionTurn(sessionState, "Cancel", false);
+        try {
+            await this.interruptSessionTurn(sessionState, "Cancel", false);
+        } catch (err) {
+        }
     }
 }
 
