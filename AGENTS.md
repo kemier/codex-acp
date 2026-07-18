@@ -119,22 +119,26 @@ The build produces a single self-contained `dist/index.js` with no runtime depen
 From the `codex-acp` repo:
 
 ```bash
-cd /workspace/git/ezennin/codex-acp
+cd ~/projects/codex-acp
 ./scripts/install.sh
 ```
 
 This script:
-1. Builds codex-acp from `../codex-acp`
-2. Copies `dist/index.js` to `~/.local/bin/codex-acp`
-3. Also syncs to `~/.npm-global/lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js` (because `~/.npm-global/bin` is first on `PATH`)
+1. Builds codex-acp (`node build.mjs` -> `dist/index.js`, with `@openai/codex` external)
+2. Symlinks `~/.local/bin/codex-acp` -> the repo's `dist/index.js`
+
+A **symlink** (not a copy) is required: the bundle resolves `@openai/codex` at
+runtime via `createRequire(import.meta.url)`, relative to the script's real
+location. The repo's `dist/index.js` lives next to `node_modules/@openai/codex`,
+so the symlink resolves correctly. A bare copy has no `node_modules` sibling and
+fails with `MODULE_NOT_FOUND`.
 
 ### Manual install
 
 ```bash
-cd /workspace/git/ezennin/codex-acp
+cd ~/projects/codex-acp
 npm run build
-cp dist/index.js ~/.local/bin/codex-acp
-chmod +x ~/.local/bin/codex-acp
+ln -sf "$(pwd)/dist/index.js" ~/.local/bin/codex-acp
 ```
 
 ### Verify
@@ -145,12 +149,12 @@ codex-acp --version   # should print @agentclientprotocol/codex-acp <version>
 
 ### PATH resolution
 
-The server has multiple `codex-acp` candidates on `PATH`. Priority order:
+This machine resolves `codex-acp` from `PATH` in this order:
 
-1. `~/.npm-global/bin/codex-acp` -> symlink to `~/.npm-global/lib/node_modules/@agentclientprotocol/codex-acp/dist/index.js`
-2. `~/.local/bin/codex-acp` -> direct copy
+1. `/opt/homebrew/bin/codex-acp` -> brew package (has nested `node_modules/@openai/codex`)
+2. `~/.local/bin/codex-acp` -> symlink to the repo's `dist/index.js` (set up by `installscript.sh`)
 
-The install script syncs to **both** locations to ensure the built version is used regardless of PATH order.
+Both resolve `@openai/codex` correctly. The install script points `~/.local/bin` at the repo build so it always tracks the latest source.
 
 ## Full deploy workflow (codex-acp + vscode-acp)
 
