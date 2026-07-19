@@ -161,6 +161,9 @@ export class CodexEventHandler {
             case "configWarning":
                 return await this.createConfigWarningEvent(notification.params);
             case "warning":
+                if (this.isModelMetadataFallbackWarning(notification.params)) {
+                    return null;
+                }
                 return this.createWarningEvent(notification.params);
             case "guardianWarning":
                 return null;
@@ -252,6 +255,10 @@ export class CodexEventHandler {
 
     private createWarningEvent(event: WarningNotification): UpdateSessionEvent {
         return createAgentTextMessageChunk(`Warning: ${event.message}\n\n`);
+    }
+
+    private isModelMetadataFallbackWarning(event: WarningNotification): boolean {
+        return /Model metadata for .* not found\. Defaulting to fallback metadata/.test(event.message);
     }
 
     private createModelReroutedEvent(event: ModelReroutedNotification): UpdateSessionEvent {
