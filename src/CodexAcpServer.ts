@@ -2315,7 +2315,7 @@ export class CodexAcpServer {
     /**
      * Steering notification — injects a user message into the active turn
      * without cancelling it. Uses Codex's native turn/steer RPC method.
-     * This is a custom ACP extension: `_ericli/session/steer`.
+     * This is a custom ACP extension: `session/steer`.
      * Sent by vscode-acp when the user types a message during streaming.
      */
     async steer(params: { sessionId: string; text: string }): Promise<void> {
