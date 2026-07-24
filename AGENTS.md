@@ -22,6 +22,8 @@
 | **vscode-acp** | `/workspace/git/ezennin/vscode-acp` | VS Code extension implementing ACP. Consumes this agent binary. Key file: `src/ui/ChatWebviewProvider.ts` (webview rendering, link parsing, session UI). |
 | **codex** | `/workspace/git/ezennin/codex` | Codex CLI core (Rust). The actual agent engine spawned as `codex app-server`. Key crate: `codex-rs/app-server/`. |
 | **ericai-proxy** | `/workspace/git/ezennin/ericai-proxy` | Rust proxy translating OpenAI Responses API ↔ Chat Completions API. Must flatten `ToolSpec::Namespace` tools into individual function tools. |
+| **claude-code-acp** | `/workspace/git/ezennin/claude-code-acp` | ACP bridge for Claude Code CLI. Spawns `claude` with `--output-format stream-json`. Key files: `src/agent.ts` (ACP handlers + steer), `src/claude-runner.ts` (subprocess management). |
+| **ericli** | `/workspace/git/ezennin/ericli` | EricAI CLI alternative to Codex. Talks to EricAI's vLLM backend. Provides `ericli acp` for ACP stdio. |
 
 ## Testing Guidelines
 
@@ -113,6 +115,27 @@ npm run build        # esbuild -> dist/index.js (single bundled ESM file)
 ```
 
 The build produces a single self-contained `dist/index.js` with no runtime dependencies (everything is bundled except `@openai/codex` which is resolved at runtime via `CODEX_PATH` or the bundled npm package).
+
+## Mid-Turn Steering
+
+codex-acp supports mid-turn steering via the custom `_ericli/session/steer`
+ACP notification. When the vscode-acp client sends this notification during
+an active turn, codex-acp translates it to a native Codex `turn/steer` RPC
+request, which injects the user's message into the active LLM turn at the
+next iteration boundary — without cancelling the turn.
+
+**Flow:**
+1. vscode-acp sends `_ericli/session/steer` notification `{ sessionId, text }`
+2. `CodexAcpServer.steer()` looks up `sessionState.currentTurnId`
+3. `CodexAcpClient.turnSteer()` calls `CodexAppServerClient.turnSteer()` → `turn/steer` RPC
+4. Codex core injects the message via `steer_input()` — LLM sees it as live guidance
+
+Key files:
+- `src/AcpExtensions.ts` — `STEER_NOTIFICATION` constant
+- `src/CodexAcpServer.ts` — `steer()` method
+- `src/CodexAcpClient.ts` — `turnSteer()` wrapper
+- `src/CodexAppServerClient.ts` — `turnSteer()` RPC call
+- `src/index.ts` — `.onNotification(STEER_NOTIFICATION, ...)` registration
 
 ### Install to local bin
 

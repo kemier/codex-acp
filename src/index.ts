@@ -13,6 +13,7 @@ import {logger} from "./Logger";
 import {runLoginCommand} from "./login";
 import {runCodexCli} from "./CodexCli";
 import {GOAL_CONTROL_METHOD, LEGACY_SET_SESSION_MODEL_METHOD} from "./AcpExtensions";
+import {STEER_NOTIFICATION} from "./AcpExtensions";
 
 const emptyExtensionParamsParser = z.preprocess(
     (params) => params ?? {},
@@ -27,6 +28,11 @@ const legacySetSessionModelParamsParser = z.object({
 const goalControlParamsParser = z.object({
     sessionId: z.string(),
     action: z.enum(["pause", "clear"]),
+}).passthrough();
+
+const steerParamsParser = z.object({
+    sessionId: z.string(),
+    text: z.string(),
 }).passthrough();
 
 if (process.argv.includes("--version")) {
@@ -133,8 +139,9 @@ function startAcpServer() {
         .onRequest(acp.methods.agent.providers.set, (ctx) => getAgent().setProvider(ctx.params))
         .onRequest(acp.methods.agent.providers.disable, (ctx) => getAgent().disableProvider(ctx.params))
         .onRequest(acp.methods.agent.session.prompt, (ctx) => getAgent().prompt(ctx.params, ctx.signal))
-        .onNotification(acp.methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params))
-        .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
+       .onNotification(acp.methods.agent.session.cancel, (ctx) => getAgent().cancel(ctx.params))
+        .onNotification(STEER_NOTIFICATION, steerParamsParser, (ctx) => getAgent().steer(ctx.params))
+       .onRequest("authentication/status", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/status", ctx.params))
         .onRequest("authentication/logout", emptyExtensionParamsParser, (ctx) => getAgent().extMethod("authentication/logout", ctx.params))
         .onRequest(LEGACY_SET_SESSION_MODEL_METHOD, legacySetSessionModelParamsParser, (ctx) => getAgent().extMethod(LEGACY_SET_SESSION_MODEL_METHOD, ctx.params))
         .onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAgent().extMethod(GOAL_CONTROL_METHOD, ctx.params))

@@ -834,6 +834,14 @@ export class CodexAcpClient {
         });
     }
 
+    async turnSteer(params: { threadId: string, turnId: string, text: string }): Promise<void> {
+        await this.codexClient.turnSteer({
+            threadId: params.threadId,
+            expectedTurnId: params.turnId,
+            input: [{ type: "text", text: params.text, text_elements: [] }],
+        });
+    }
+
     async fetchAvailableModels(): Promise<Model[]> {
         const models: Model[] = [];
         let cursor: string | null = null;

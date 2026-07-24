@@ -1914,6 +1914,34 @@ export class CodexAcpServer {
         } catch (err) {
         }
     }
+
+    /**
+     * Steering notification — injects a user message into the active turn
+     * without cancelling it. Uses Codex's native turn/steer RPC method.
+     * This is a custom ACP extension: `_ericli/session/steer`.
+     * Sent by vscode-acp when the user types a message during streaming.
+     */
+    async steer(params: { sessionId: string; text: string }): Promise<void> {
+        const sessionState = this.sessions.get(params.sessionId);
+        if (!sessionState) {
+            logger.log("Steer request rejected: session not found", {sessionId: params.sessionId});
+            return;
+        }
+        if (!sessionState.currentTurnId) {
+            logger.log("Steer request rejected: no active turn", {sessionId: params.sessionId});
+            return;
+        }
+        try {
+            await this.codexAcpClient.turnSteer({
+                threadId: params.sessionId,
+                turnId: sessionState.currentTurnId,
+                text: params.text,
+            });
+            logger.log("Steer succeeded", {sessionId: params.sessionId, textLen: params.text.length});
+        } catch (err) {
+            logger.error("Steer failed", err);
+        }
+    }
 }
 
 function mergeHistoryUpdates(
