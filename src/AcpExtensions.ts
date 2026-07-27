@@ -11,6 +11,7 @@ export const LEGACY_SET_SESSION_MODEL_METHOD = "session/set_model";
 export const SESSION_STEERING_METHOD = "_session/steering";
 export const GOAL_CONTROL_METHOD = "_codex/session/goal_control";
 export const STEER_NOTIFICATION = "session/steer";
+export const STOP_NOTIFICATION = "session/stop";
 
 export type LegacySessionModel = {
     modelId: string;

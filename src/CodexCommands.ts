@@ -176,14 +176,9 @@ export class CodexCommands {
               name: "ps",
               description: "List background terminal processes.",
               input: null
-          },
-          {
-             name: "stop",
-             description: "Kill all running background processes spawned in this session.",
-             input: null
-          }
-       ];
-   }
+         },
+      ];
+  }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
         // Find the text block containing the slash command.
@@ -227,40 +222,14 @@ export class CodexCommands {
                const psMessage = this.buildPsMessage(sessionState);
                await psSession.update(createAgentTextMessageChunk(psMessage));
                return { handled: true };
-           }
-          case "stop": {
-              const lines: string[] = ["**Stopping all running processes...**", ""];
-              let stopped = 0;
-              // Kill all background terminal processes via Op::CleanBackgroundTerminals
-              // (properly drains process store, unregisters network approvals,
-              // terminates each process via the unified_exec manager).
-              if (sessionState.backgroundProcesses.size > 0) {
-                  const procCount = sessionState.backgroundProcesses.size;
-                  try {
-                      await this.runWithProcessCheck(() => this.codexAcpClient.cleanBackgroundTerminals(sessionId));
-                      sessionState.backgroundProcesses.clear();
-                      lines.push(`✅ Killed ${procCount} running process(es).`);
-                      stopped += procCount;
-                  } catch (err) {
-                      logger.error(`/stop: cleanBackgroundTerminals failed`, err);
-                  }
-              }
-              if (stopped === 0) {
-                   lines.push("No running processes to stop.");
-               } else {
-                   lines.push("", `**Total: ${stopped} process(es) stopped.**`);
-               }
-               const stopSession = new ACPSessionConnection(this.connection, sessionId);
-               await stopSession.update(createAgentTextMessageChunk(lines.join("\n")));
-               return { handled: true };
           }
-           case "status": {
-                const session = new ACPSessionConnection(this.connection, sessionId);
-                const message = this.buildStatusMessage(sessionState);
-                await session.update(createAgentTextMessageChunk(message));
-                return { handled: true };
-            }
-            default:
+          case "status": {
+              const session = new ACPSessionConnection(this.connection, sessionId);
+              const message = this.buildStatusMessage(sessionState);
+              await session.update(createAgentTextMessageChunk(message));
+              return { handled: true };
+          }
+           default:
                 return { handled: false };
         }
     }

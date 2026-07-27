@@ -2334,9 +2334,24 @@ export class CodexAcpServer {
                 turnId: sessionState.currentTurnId,
                 text: params.text,
             });
-            logger.log("Steer succeeded", {sessionId: params.sessionId, textLen: params.text.length});
+           logger.log("Steer succeeded", {sessionId: params.sessionId, textLen: params.text.length});
+       } catch (err) {
+           logger.error("Steer failed", err);
+       }
+   }
+
+    async stopProcesses(params: { sessionId: string }): Promise<void> {
+        const sessionState = this.sessions.get(params.sessionId);
+        if (!sessionState) {
+            logger.log("Stop processes rejected: session not found", {sessionId: params.sessionId});
+            return;
+        }
+        try {
+            await this.codexAcpClient.cleanBackgroundTerminals(params.sessionId);
+            sessionState.backgroundProcesses.clear();
+            logger.log("Stop processes succeeded", {sessionId: params.sessionId});
         } catch (err) {
-            logger.error("Steer failed", err);
+            logger.error("Stop processes failed", err);
         }
     }
 }
