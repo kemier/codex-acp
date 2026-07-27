@@ -600,6 +600,17 @@ export class CodexEventHandler {
                 ? RequestError.internalError(this.createTurnErrorData(params.error))
                 : RequestError.authRequired(this.createTurnErrorData(params.error), params.error.message);
         }
+        // All other non-retryable errors (e.g. upstream 503 after retry
+        // exhaustion, responseTooManyFailedAttempts, internal_server_error,
+        // bad_request, sandbox_error, "other") must set this.failure so the
+        // prompt throws an error instead of returning end_turn with 0 tokens.
+        // Without this, vscode-acp sees a successful turn and the user gets
+        // no indication that the model call failed.
+        if (!this.failure) {
+            this.failure = RequestError.internalError(
+                this.createTurnErrorData(params.error),
+            );
+        }
         return createAgentTextMessageChunk(`${params.error.message}\n\n`);
     }
 
