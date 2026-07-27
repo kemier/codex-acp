@@ -502,9 +502,13 @@ export class CodexAppServerClient {
         return await compactionCompleted;
     }
 
-    async turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
-        return await this.sendRequest({ method: "turn/interrupt", params: params });
-    }
+   async turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResponse> {
+       return await this.sendRequest({ method: "turn/interrupt", params: params });
+   }
+
+  async cleanBackgroundTerminals(threadId: string): Promise<void> {
+      await this.connection.sendRequest("thread/backgroundTerminals/clean", { thread_id: threadId });
+  }
 
     async turnSteer(params: TurnSteerParams): Promise<TurnSteerResponse> {
         return await this.sendRequest({ method: "turn/steer", params: params });
