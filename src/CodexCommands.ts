@@ -49,23 +49,30 @@ export class CodexCommands {
         this.onLogout = onLogout;
     }
 
-    async publish(sessionState: SessionState): Promise<void> {
-        try {
-            const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
-            const availableCommands = this.buildAvailableCommands(skillsResponse?.data ?? []);
-            if (availableCommands.length === 0) {
-                return;
-            }
+   async publish(sessionState: SessionState): Promise<void> {
+       try {
+           let skillsEntries: SkillsListEntry[] = [];
+           try {
+               const skillsResponse = await this.runWithProcessCheck(() => this.codexAcpClient.listSkills(this.createSkillsListParams(sessionState)));
+               skillsEntries = skillsResponse?.data ?? [];
+           } catch {
+               // Skills list may fail (e.g. codex app-server not ready yet);
+               // still publish builtin commands (/ps, /stop, /status, etc).
+           }
+           const availableCommands = this.buildAvailableCommands(skillsEntries);
+           if (availableCommands.length === 0) {
+               return;
+           }
 
-            const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
-            await session.update({
-                sessionUpdate: "available_commands_update",
-                availableCommands
-            });
-        } catch (err) {
-            logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
-        }
-    }
+           const session = new ACPSessionConnection(this.connection, sessionState.sessionId);
+           await session.update({
+               sessionUpdate: "available_commands_update",
+               availableCommands
+           });
+       } catch (err) {
+           logger.error(`Failed to publish available commands for session ${sessionState.sessionId}`, err);
+       }
+   }
 
     private createSkillsListParams(sessionState: SessionState): SkillsListParams {
         return {
@@ -165,13 +172,18 @@ export class CodexCommands {
                description: "Sign out of Codex. This option is available when you are logged in via ChatGPT.",
                input: null
            },
-           {
-               name: "ps",
-               description: "List background terminal processes.",
-               input: null
-           }
+          {
+              name: "ps",
+              description: "List background terminal processes.",
+              input: null
+          },
+          {
+             name: "stop",
+             description: "Kill all running background processes spawned in this session.",
+             input: null
+          }
        ];
-    }
+   }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
         // Find the text block containing the slash command.
@@ -210,13 +222,39 @@ export class CodexCommands {
 
         const sessionId = sessionState.sessionId;
         switch (commandName) {
-            case "ps": {
-                const psSession = new ACPSessionConnection(this.connection, sessionId);
-                const psMessage = this.buildPsMessage(sessionState);
-                await psSession.update(createAgentTextMessageChunk(psMessage));
-                return { handled: true };
-            }
-            case "status": {
+           case "ps": {
+               const psSession = new ACPSessionConnection(this.connection, sessionId);
+               const psMessage = this.buildPsMessage(sessionState);
+               await psSession.update(createAgentTextMessageChunk(psMessage));
+               return { handled: true };
+           }
+          case "stop": {
+              const lines: string[] = ["**Stopping all running processes...**", ""];
+              let stopped = 0;
+              // Kill all background terminal processes via Op::CleanBackgroundTerminals
+              // (properly drains process store, unregisters network approvals,
+              // terminates each process via the unified_exec manager).
+              if (sessionState.backgroundProcesses.size > 0) {
+                  const procCount = sessionState.backgroundProcesses.size;
+                  try {
+                      await this.runWithProcessCheck(() => this.codexAcpClient.cleanBackgroundTerminals(sessionId));
+                      sessionState.backgroundProcesses.clear();
+                      lines.push(`✅ Killed ${procCount} running process(es).`);
+                      stopped += procCount;
+                  } catch (err) {
+                      logger.error(`/stop: cleanBackgroundTerminals failed`, err);
+                  }
+              }
+              if (stopped === 0) {
+                   lines.push("No running processes to stop.");
+               } else {
+                   lines.push("", `**Total: ${stopped} process(es) stopped.**`);
+               }
+               const stopSession = new ACPSessionConnection(this.connection, sessionId);
+               await stopSession.update(createAgentTextMessageChunk(lines.join("\n")));
+               return { handled: true };
+          }
+           case "status": {
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
                 await session.update(createAgentTextMessageChunk(message));

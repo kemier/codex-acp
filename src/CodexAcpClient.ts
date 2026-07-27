@@ -827,12 +827,16 @@ export class CodexAcpClient {
         };
     }
 
-    async turnInterrupt(params: { threadId: string, turnId: string }): Promise<void> {
-        await this.codexClient.turnInterrupt({
-            threadId: params.threadId,
-            turnId: params.turnId
-        });
-    }
+   async turnInterrupt(params: { threadId: string, turnId: string }): Promise<void> {
+       await this.codexClient.turnInterrupt({
+           threadId: params.threadId,
+           turnId: params.turnId
+       });
+   }
+
+   async cleanBackgroundTerminals(threadId: string): Promise<void> {
+       await this.codexClient.cleanBackgroundTerminals(threadId);
+   }
 
     async turnSteer(params: { threadId: string, turnId: string, text: string }): Promise<void> {
         await this.codexClient.turnSteer({
