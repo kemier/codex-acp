@@ -460,7 +460,9 @@ export function createSubAgentActivityUpdate(
     sessionUpdate: "tool_call" | "tool_call_update",
 ): UpdateSessionEvent {
     const name = item.agentPath.split("/").filter(Boolean).at(-1) ?? "subagent";
-    const title = formatSubAgentActivityTitle(item.kind, name);
+    // Truncate long names so the stage row doesn't overflow.
+    const displayName = name.length > 60 ? name.substring(0, 57) + "..." : name;
+    const title = formatSubAgentActivityTitle(item.kind, displayName);
     const common = {
         toolCallId: item.id,
         status,
