@@ -63,19 +63,30 @@ export async function createFileChangeUpdate(
     item: ThreadItem & { type: "fileChange" }
 ): Promise<UpdateSessionEvent> {
     const patches: ToolCallContent[] = [];
-    for (const change of item.changes) {
-        const content = await createPatchContent(change);
-        if (content) patches.push(content);
-        // ignore unparseable diffs
+   for (const change of item.changes) {
+       const content = await createPatchContent(change);
+       if (content) patches.push(content);
+       // ignore unparseable diffs
+   }
+    // Build a descriptive title that includes the file name(s) being edited,
+    // so the tool call row shows "Edit 'foo.ts'" instead of generic "Editing files".
+    const filePaths = item.changes.map(c => c.path).filter(Boolean);
+    let editTitle: string;
+    if (filePaths.length === 1) {
+        editTitle = `Edit '${path.basename(filePaths[0])}'`;
+    } else if (filePaths.length > 1) {
+        editTitle = `Edit ${filePaths.length} files`;
+    } else {
+        editTitle = "Editing files";
     }
-    return {
-        sessionUpdate: "tool_call",
-        toolCallId: item.id,
-        title: "Editing files",
-        kind: "edit",
-        status: toAcpStatus(item.status),
-        content: patches,
-    };
+   return {
+       sessionUpdate: "tool_call",
+       toolCallId: item.id,
+        title: editTitle,
+       kind: "edit",
+       status: toAcpStatus(item.status),
+       content: patches,
+   };
 }
 
 export async function createCommandExecutionUpdate(item: CommandExecutionItem): Promise<UpdateSessionEvent> {
