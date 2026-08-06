@@ -6,7 +6,7 @@
       "update": {
         "sessionUpdate": "tool_call",
         "toolCallId": "file-change-1",
-        "title": "Editing files",
+        "title": "Edit 'NewFile.kt'",
         "kind": "edit",
         "status": "completed",
         "content": [

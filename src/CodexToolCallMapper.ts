@@ -72,8 +72,9 @@ export async function createFileChangeUpdate(
     // so the tool call row shows "Edit 'foo.ts'" instead of generic "Editing files".
     const filePaths = item.changes.map(c => c.path).filter(Boolean);
     let editTitle: string;
-    if (filePaths.length === 1) {
-        editTitle = `Edit '${path.basename(filePaths[0])}'`;
+    const firstPath = filePaths[0];
+    if (filePaths.length === 1 && firstPath !== undefined) {
+        editTitle = `Edit '${path.basename(firstPath)}'`;
     } else if (filePaths.length > 1) {
         editTitle = `Edit ${filePaths.length} files`;
     } else {

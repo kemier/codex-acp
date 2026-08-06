@@ -1900,14 +1900,22 @@ export class CodexAcpServer {
         // to execute even while another turn is in progress.  This mirrors the
         // codex TUI where /ps, /status, /mcp etc. are dispatched immediately
         // regardless of whether a turn is running.
-        const readOnlyResult = await this.availableCommands.tryHandleReadOnlyCommand(params.prompt, sessionState);
-        if (readOnlyResult.handled) {
-            logger.log("Prompt handled by a read-only command");
-            return {
-                stopReason: "end_turn",
-                usage: this.buildPromptUsage(sessionState.lastTokenUsage),
-                _meta: this.buildQuotaMeta(sessionState),
-            };
+        //
+        // The read-only check is gated by a synchronous isReadOnlyCommand()
+        // pre-check so ordinary prompts do not await here: an await would yield
+        // a microtask before the approval/elicitation handlers are registered
+        // below, racing with server-side approval requests that arrive right
+        // after prompt() returns its in-flight promise.
+        if (this.availableCommands.isReadOnlyCommand(params.prompt)) {
+            const readOnlyResult = await this.availableCommands.tryHandleReadOnlyCommand(params.prompt, sessionState);
+            if (readOnlyResult.handled) {
+                logger.log("Prompt handled by a read-only command");
+                return {
+                    stopReason: "end_turn",
+                    usage: this.buildPromptUsage(sessionState.lastTokenUsage),
+                    _meta: this.buildQuotaMeta(sessionState),
+                };
+            }
         }
         sessionState.currentTurnId = null;
         sessionState.lastTokenUsage = null;

@@ -6,7 +6,7 @@
       "update": {
         "sessionUpdate": "tool_call",
         "toolCallId": "file-change-raw",
-        "title": "Editing files",
+        "title": "Edit 'RawFile.kt'",
         "kind": "edit",
         "status": "completed",
         "content": [

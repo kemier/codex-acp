@@ -80,6 +80,11 @@
             "input": null
           },
           {
+            "name": "ps",
+            "description": "List background terminal processes.",
+            "input": null
+          },
+          {
             "name": "$build",
             "description": "Build",
             "input": null

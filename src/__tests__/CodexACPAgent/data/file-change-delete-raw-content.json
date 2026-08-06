@@ -6,7 +6,7 @@
       "update": {
         "sessionUpdate": "tool_call",
         "toolCallId": "file-delete-raw",
-        "title": "Editing files",
+        "title": "Edit 'RawDeleteFile.kt'",
         "kind": "edit",
         "status": "completed",
         "content": [

@@ -202,6 +202,24 @@ export class CodexCommands {
     }
 
     /**
+     * Synchronously determine whether the prompt is a read-only slash command
+     * (e.g. /ps, /status) that {@link tryHandleReadOnlyCommand} will handle.
+     *
+     * Used to avoid awaiting {@link tryHandleReadOnlyCommand} for ordinary
+     * prompts: an `await` on an async method yields a microtask before the
+     * caller can register its approval/elicitation handlers, which breaks tests
+     * (and real clients) that send a server-side approval request immediately
+     * after `prompt()` returns its in-flight promise. By checking synchronously
+     * first, the common non-command path proceeds with no yield.
+     */
+    isReadOnlyCommand(prompt: acp.ContentBlock[]): boolean {
+        const command = this.parseCommand(prompt);
+        if (command === null) return false;
+        if (command.name.startsWith("$")) return false;
+        return command.name === "ps" || command.name === "status";
+    }
+
+    /**
      * Handle read-only slash commands that don't start an LLM turn.
      * These can be safely executed even while another turn is in progress.
      * Returns { handled: true } if the command was handled, { handled: false } otherwise.
