@@ -8,6 +8,7 @@ import {
     createTestFixture,
     createTestModel,
     createTestSessionState,
+    disposeAllTestFixtures,
     type TestFixture
 } from "../acp-test-utils";
 import type {ServerNotification} from "../../app-server";
@@ -26,7 +27,13 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         vi.clearAllMocks();
     });
 
-    afterEach(() => {
+    afterEach(async () => {
+        // Drain ALL fixtures created during the test — including local ones
+        // (authFixture/keyFixture/envFixture/...) that aren't reachable via
+        // the shared `fixture` variable. Each undisposed fixture leaks a codex
+        // process + a CODEX_HOME dir (~8,160 inodes), which exhausts /tmp's
+        // 1M-inode tmpfs cap over a full suite. See disposeAllTestFixtures.
+        await disposeAllTestFixtures();
         vi.unstubAllEnvs();
     });
 

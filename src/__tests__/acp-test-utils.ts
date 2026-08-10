@@ -4,6 +4,7 @@ import {CodexAcpClient} from '../CodexAcpClient';
 import {CodexAppServerClient, type CodexConnectionEvent} from '../CodexAppServerClient';
 import {startCodexConnection} from "../CodexJsonRpcConnection";
 import {CodexAcpServer, type SessionState} from "../CodexAcpServer";
+import {ModelContextWindowResolver} from "../ModelContextWindowResolver";
 import type {AcpClientConnection} from "../ACPSessionConnection";
 import type {ServerNotification} from "../app-server";
 import type {MessageConnection} from "vscode-jsonrpc/node";
@@ -59,6 +60,8 @@ export interface TestFixture {
     getCodexAppServerClient(): CodexAppServerClient,
     getCodexAcpClient(): CodexAcpClient,
     getCodexAcpAgent(): CodexAcpServer,
+    /** Stub resolver injected into the agent; configure via `.set(model, window)`. */
+    getModelContextWindowResolver(): StubModelContextWindowResolver,
 
     onCodexConnectionEvent(handler: (event: CodexConnectionEvent) => void): void,
     getCodexConnectionEvents(ignoredFields: string[], options?: CodexConnectionDumpOptions): CodexConnectionEvent[],
@@ -69,10 +72,50 @@ export interface TestFixture {
     getAcpConnectionEvents(ignoredFields: string[]): MethodCallEvent[],
     getAcpConnectionDump(ignoredFields: string[]): string,
     clearAcpConnectionDump(): void,
+
+    /**
+     * Tear down the fixture: kill the spawned codex child process (if any) and
+     * remove its `CODEX_HOME` temp dir. MUST be called in `afterEach` by tests
+     * that use `createTestFixture` (the real-binary path) — otherwise each test
+     * leaks a `codex-acp-codex-home-*` dir (~8,160 inodes each), which exhausts
+     * the `/tmp` tmpfs 1M-inode cap over a full suite and cascades into
+     * `ENOSPC` failures in unrelated code paths (including the shell's AFS
+     * module init, whose Tcl `[exec id -u]` creates a temp file in `/tmp`).
+     * Safe to call on mock fixtures (no-op when there is no process/dir).
+     * Returns a Promise so callers can `await fixture.dispose()` in
+     * `afterEach` — this lets the codex child actually exit (releasing its
+     * SQLite WAL handles) before the temp dir is removed.
+     */
+    dispose(): Promise<void>,
 }
 
 export interface CodexConnectionDumpOptions {
     placeholderResponseMethods?: string[];
+}
+
+/**
+ * Test-only stub for `ModelContextWindowResolver`. Returns `undefined` (no
+ * window known → the proactive guard skips compaction) by default, so existing
+ * tests that don't care about the guard behave exactly as before. Tests that
+ * DO exercise the guard call `.set(modelId, window)` to seed a known window,
+ * and can spy on `.resolve` / `.compactCalls` (via the agent's `runCompact`)
+ * to assert compaction fired — all without touching the network.
+ */
+export class StubModelContextWindowResolver extends ModelContextWindowResolver {
+    private readonly windows = new Map<string, number>();
+    /** Number of times `resolve` was consulted (regardless of outcome). */
+    public resolveCalls = 0;
+
+    /** Seed a known context window for a model id. */
+    set(modelId: string, window: number): this {
+        this.windows.set(modelId, window);
+        return this;
+    }
+
+    override async resolve(_baseUrl: string, modelId: string): Promise<number | undefined> {
+        this.resolveCalls += 1;
+        return this.windows.get(modelId);
+    }
 }
 
 export interface AcpConnectionConfig {
@@ -85,6 +128,14 @@ export interface ConnectionConfig {
     connection: MessageConnection;
     getExitCode: () => number | null;
     acpConnection?: AcpConnectionConfig;
+    /**
+     * Optional teardown hook invoked by `fixture.dispose()`. `createTestFixture`
+     * (the real-binary path) supplies this to kill the spawned codex child and
+     * remove its `CODEX_HOME` temp dir. Mock fixtures omit it (dispose is a
+     * no-op). See `TestFixture.dispose` for why this matters. Async so the
+     * hook can await the child's exit before removing the dir.
+     */
+    dispose?: () => Promise<void> | void;
 }
 
 export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
@@ -98,7 +149,19 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
 
     const codexAppServerClient = new CodexAppServerClient(config.connection);
     const codexAcpClient = new CodexAcpClient(codexAppServerClient);
-    const codexAcpAgent = new CodexAcpServer(acpConnection, codexAcpClient, undefined, config.getExitCode);
+    // Inject a stub resolver so the proactive model-switch compaction guard
+    // never makes real network calls against the fixture gateway
+    // (https://www.example.com). Tests that exercise the guard configure
+    // windows via `fixture.getModelContextWindowResolver().set(...)`.
+    const modelContextWindowResolver = new StubModelContextWindowResolver();
+    const codexAcpAgent = new CodexAcpServer(
+        acpConnection,
+        codexAcpClient,
+        undefined,
+        config.getExitCode,
+        undefined,
+        modelContextWindowResolver,
+    );
 
     const transportEvents: CodexConnectionEvent[] = [];
     const codexEventHandlers: ((event: CodexConnectionEvent) => void)[] = [];
@@ -107,12 +170,19 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
         codexEventHandlers.forEach(handler => handler(event));
     });
 
-    return {
+    // Tracks whether dispose() has run, to make it idempotent (afterEach +
+    // an explicit call should not double-kill / double-rm).
+    let disposed = false;
+
+    const fixture: TestFixture = {
         getCodexAcpAgent(): CodexAcpServer {
             return codexAcpAgent;
         },
         getCodexAcpClient(): CodexAcpClient {
             return codexAcpClient;
+        },
+        getModelContextWindowResolver(): StubModelContextWindowResolver {
+            return modelContextWindowResolver;
         },
         getCodexConnectionEvents(ignoredFields: string[], options?: CodexConnectionDumpOptions): CodexConnectionEvent[] {
             const placeholderResponseMethods = new Set(options?.placeholderResponseMethods ?? []);
@@ -161,8 +231,53 @@ export function createBaseTestFixture(config: ConnectionConfig): TestFixture {
         },
         clearAcpConnectionDump() {
             acpConnectionEvents.splice(0, acpConnectionEvents.length);
+        },
+        async dispose(): Promise<void> {
+            // Guard against double-dispose (afterEach + an explicit call).
+            if (disposed) {
+                return;
+            }
+            disposed = true;
+            // Kill the codex child process FIRST and await its exit so it
+            // isn't writing into CODEX_HOME (and holding SQLite WAL handles)
+            // when we rmSync the dir — that was the ENOTEMPTY/EBUSY race that
+            // leaked ~8 dirs per run.
+            try {
+                await config.dispose?.();
+            } catch {
+                // Best-effort: a failing dispose hook must not mask test failures.
+            }
         }
     };
+    // Register so `disposeAllTestFixtures()` (called from afterEach) can drain
+    // ALL fixtures — including local ones a test created inside its body that
+    // aren't reachable via the shared `fixture` variable.
+    createdFixtures.add(fixture);
+    return fixture;
+}
+
+/**
+ * Registry of every fixture created via `createTestFixture`/`createBaseTestFixture`
+ * in the current test process. Many tests create MULTIPLE local fixtures (e.g.
+ * `authFixture`, `keyFixture`, `envFixture`) in addition to the shared
+ * `beforeEach` fixture; without tracking, only the shared one gets disposed in
+ * `afterEach` and the rest leak their codex process + CODEX_HOME dir.
+ * `disposeAllTestFixtures()` drains this set — call it from `afterEach` (or a
+ * global teardown) to guarantee no fixture leaks, regardless of how many a
+ * single test created.
+ */
+const createdFixtures = new Set<TestFixture>();
+
+/**
+ * Dispose every fixture created since the last call. Intended for `afterEach`
+ * (or a global `afterAll` fallback): even if a test forgets to dispose a local
+ * fixture, this drains them all. Idempotent per-fixture (double-dispose is a
+ * no-op). Returns a Promise so callers can `await disposeAllTestFixtures()`.
+ */
+export async function disposeAllTestFixtures(): Promise<void> {
+    const pending = Array.from(createdFixtures);
+    createdFixtures.clear();
+    await Promise.all(pending.map((f) => f.dispose()));
 }
 
 /**
@@ -180,13 +295,34 @@ export function createTestFixture(): TestFixture {
         ...process.env,
         CODEX_HOME: codexHome,
     });
-    codexConnection.process.on("exit", () => {
+    const codexProcess = codexConnection.process;
+    // Best-effort cleanup of the process + temp dir. The `exit` listener
+    // remains as a fallback, but relying on it alone leaks when vitest tears
+    // down the worker before the child exits. `fixture.dispose()` (called in
+    // afterEach) kills the child deterministically, THEN removes the dir.
+    codexProcess.on("exit", () => {
         removeDirectoryWithRetry(codexHome);
     });
 
     return createBaseTestFixture({
         connection: codexConnection.connection,
-        getExitCode: () => codexConnection.process.exitCode
+        getExitCode: () => codexConnection.process.exitCode,
+        dispose: async () => {
+            // Kill first so the child isn't writing into CODEX_HOME during
+            // rmSync (which causes ENOTEMPTY races). SIGTERM lets codex flush.
+            try {
+                if (!codexProcess.killed) {
+                    codexProcess.kill("SIGTERM");
+                }
+            } catch {
+                // Process may have already exited; ignore.
+            }
+            // Await the child's actual exit (with a timeout) so it releases
+            // its SQLite WAL handles before we remove the dir. If it doesn't
+            // exit gracefully, escalate to SIGKILL.
+            await waitForProcessExit(codexProcess, 2000);
+            removeDirectoryWithRetry(codexHome);
+        },
     });
 }
 
@@ -228,17 +364,63 @@ function escapeTOML(value: string): string {
 }
 
 export function removeDirectoryWithRetry(directory: string): void {
-    for (let attempt = 0; attempt < 5; attempt += 1) {
+    // Retry with backoff because the codex child may still be releasing file
+    // handles (SQLite WAL/SHM) for a few ms after exit. The original loop spun
+    // 5 attempts instantly (<1ms) and gave up while EBUSY was still transient
+    // → leaked the whole CODEX_HOME dir (~8,160 inodes each).
+    for (let attempt = 0; attempt < 10; attempt += 1) {
         try {
             fs.rmSync(directory, { recursive: true, force: true });
             return;
         } catch (error) {
             const err = error as NodeJS.ErrnoException;
-            if (err.code !== "ENOTEMPTY" && err.code !== "EBUSY") {
+            // Retry only on transient errors that indicate the dir/files are
+            // still in use; bail on anything else (e.g. ENOENT = already gone).
+            if (err.code !== "ENOTEMPTY" && err.code !== "EBUSY" && err.code !== "EPERM") {
                 return;
             }
+            // Backoff: 0,10,20,40,80,160,320,640,1280,2560 ms ≈ 5s total max.
+            const delay = attempt === 0 ? 0 : 10 * (2 ** (attempt - 1));
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay);
         }
     }
+}
+
+/**
+ * Wait (up to `timeoutMs`) for a spawned child process to exit. If it doesn't
+ * exit gracefully within the timeout, escalate to SIGKILL so it can't hold
+ * open file handles (e.g. SQLite WAL files in CODEX_HOME) indefinitely.
+ * Resolves immediately if the process has already exited.
+ */
+function waitForProcessExit(proc: import("node:child_process").ChildProcess, timeoutMs: number): Promise<void> {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+        return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (!settled) {
+                settled = true;
+                resolve();
+            }
+        };
+        proc.once("exit", finish);
+        // Fallback: if the child ignores SIGTERM, force-kill and resolve.
+        const timer = setTimeout(() => {
+            try {
+                if (proc.exitCode === null && proc.signalCode === null && !proc.killed) {
+                    proc.kill("SIGKILL");
+                }
+            } catch {
+                // already gone
+            }
+            // Give SIGKILL a brief moment to take effect, then resolve
+            // regardless so dispose never hangs the test run.
+            setTimeout(finish, 200);
+        }, timeoutMs);
+        // If exit fires, clear the fallback timer.
+        proc.once("exit", () => clearTimeout(timer));
+    });
 }
 
 export interface CodexMockTestFixture extends TestFixture {
@@ -371,6 +553,7 @@ export function createTestSessionState(overrides?: Partial<SessionState>): Sessi
         currentTurnId: null,
         lastTokenUsage: null,
         totalTokenUsage: null,
+        previousTurnTokenUsage: null,
         modelContextWindow: null,
         rateLimits: null,
         account: null,

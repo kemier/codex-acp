@@ -13,6 +13,7 @@ describe('MCP config merge across configured MCP servers and ACP request', { tim
     let codexHome: string;
     let projectPath: string;
     let fixture: TestFixture;
+    let codexProcess: import("node:child_process").ChildProcess;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -37,16 +38,57 @@ url = "https://example.com/mcp"
             ...process.env,
             CODEX_HOME: codexHome,
         });
+        codexProcess = codexConnection.process;
 
         fixture = createBaseTestFixture({
             connection: codexConnection.connection,
             getExitCode: () => codexConnection.process.exitCode,
+            dispose: async () => {
+                // Kill the child so it releases its SQLite handles before the
+                // dir is removed (otherwise rmSync hits EBUSY and leaks). See
+                // createTestFixture's dispose for the same pattern.
+                try {
+                    if (!codexProcess.killed) {
+                        codexProcess.kill("SIGTERM");
+                    }
+                } catch {
+                    // already exited
+                }
+                await new Promise<void>((resolve) => {
+                    if (codexProcess.exitCode !== null || codexProcess.signalCode !== null) {
+                        return resolve();
+                    }
+                    const to = setTimeout(() => {
+                        try {
+                            if (codexProcess.exitCode === null && codexProcess.signalCode === null) {
+                                codexProcess.kill("SIGKILL");
+                            }
+                        } catch {
+                            // already gone
+                        }
+                        resolve();
+                    }, 2000);
+                    codexProcess.once("exit", () => {
+                        clearTimeout(to);
+                        resolve();
+                    });
+                });
+                // Now that the child has exited and released its SQLite WAL
+                // handles, remove the CODEX_HOME dir. (The afterEach used to do
+                // this, but the dir must be removed AFTER the process exits,
+                // which is here — afterEach runs the dispose hook first.)
+                removeDirectoryWithRetry(codexHome);
+            },
         });
     });
 
-    afterEach(() => {
+    afterEach(async () => {
         vi.unstubAllEnvs();
-        removeDirectoryWithRetry(codexHome);
+        // dispose() kills the codex child + removes codexHome; the projectPath
+        // dir has no process, just remove it. disposeAllTestFixtures would also
+        // work, but this file creates exactly one fixture so a direct dispose
+        // is sufficient and clearer.
+        await fixture.dispose();
         removeDirectoryWithRetry(projectPath);
     });
 

@@ -1,7 +1,7 @@
 // noinspection ES6RedundantAwait
 
-import {describe, expect, it, vi, beforeEach} from 'vitest';
-import {createTestFixture, type TestFixture} from "../acp-test-utils";
+import {describe, expect, it, vi, beforeEach, afterEach} from 'vitest';
+import {createTestFixture, disposeAllTestFixtures, type TestFixture} from "../acp-test-utils";
 import type {McpServerStdio} from "@agentclientprotocol/sdk";
 
 describe('MCP session configuration', { timeout: 40_000 }, () => {
@@ -10,6 +10,13 @@ describe('MCP session configuration', { timeout: 40_000 }, () => {
     beforeEach(() => {
         fixture = createTestFixture();
         vi.clearAllMocks();
+    });
+
+    afterEach(async () => {
+        // Drain all fixtures (shared + any local) to avoid leaking codex
+        // processes + CODEX_HOME dirs (~8,160 inodes each). See
+        // disposeAllTestFixtures.
+        await disposeAllTestFixtures();
     });
 
 
