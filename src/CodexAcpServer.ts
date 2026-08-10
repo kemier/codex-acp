@@ -41,6 +41,7 @@ import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
 import {logger} from "./Logger";
 import {sanitizeMcpServerName} from "./McpServerName";
+import {ModelContextWindowResolver} from "./ModelContextWindowResolver";
 import {createResponseItemHistoryFallbackUpdates} from "./ResponseItemHistoryFallback";
 import {
     type LegacyLoadSessionResponse,
@@ -108,6 +109,18 @@ export interface SessionState {
     currentTurnId: string | null;
     lastTokenUsage: TokenCount | null;
     totalTokenUsage: TokenCount | null;
+    /**
+     * Snapshot of `lastTokenUsage` from the most recently COMPLETED turn,
+     * captured at the start of `session/prompt` before `lastTokenUsage` is
+     * reset to null. Used by the proactive model-switch compaction guard:
+     * `lastTokenUsage` itself is nulled at prompt start (so the upcoming turn's
+     * usage starts clean), but the guard needs to know whether the conversation
+     * as it stands RIGHT NOW (the prior turn's prompt + history) already
+     * exceeds the newly-selected model's real context window — if so, compact
+     * before forwarding the turn so the oversized history never reaches the
+     * backend under the smaller window.
+     */
+    previousTurnTokenUsage: TokenCount | null;
     modelContextWindow: number | null;
     rateLimits: RateLimitsMap | null;
     account: Account | null;
@@ -179,6 +192,7 @@ export class CodexAcpServer {
     private readonly closingSessions: Map<string, number>;
     private readonly sessionGenerations: Map<string, number>;
     private readonly sessionOpenGenerations: Map<string, number>;
+    private readonly modelContextWindowResolver: ModelContextWindowResolver;
 
     constructor(
         connection: AcpClientConnection,
@@ -186,6 +200,14 @@ export class CodexAcpServer {
         defaultAuthRequest?: CodexAuthRequest,
         getExitCode?: () => number | null,
         getRecentStderr?: () => string,
+        /**
+         * Optional override for the model-context-window resolver, used by the
+         * proactive model-switch compaction guard. Production code omits this
+         * (a real `ModelContextWindowResolver` that fetches the gateway's
+         * `/v1/models` is created). Tests inject a stub to avoid real network
+         * calls against the fixture's `https://www.example.com` gateway.
+         */
+        modelContextWindowResolver?: ModelContextWindowResolver,
     ) {
         this.sessions = new Map();
         this.pendingMcpStartupSessions = new Map();
@@ -195,6 +217,7 @@ export class CodexAcpServer {
         this.closingSessions = new Map();
         this.sessionGenerations = new Map();
         this.sessionOpenGenerations = new Map();
+        this.modelContextWindowResolver = modelContextWindowResolver ?? new ModelContextWindowResolver();
         this.connection = connection;
         this.codexAcpClient = codexAcpClient;
         this.defaultAuthRequest = defaultAuthRequest ?? null;
@@ -461,6 +484,7 @@ export class CodexAcpServer {
             currentTurnId: null,
             lastTokenUsage: null,
             totalTokenUsage: null,
+            previousTurnTokenUsage: null,
             modelContextWindow: null,
             rateLimits: null,
             account: authState.account,
@@ -1304,6 +1328,7 @@ export class CodexAcpServer {
             currentTurnId: null,
             lastTokenUsage: null,
             totalTokenUsage: null,
+            previousTurnTokenUsage: null,
             modelContextWindow: null,
             rateLimits: null,
             account: authState.account,
@@ -1918,6 +1943,11 @@ export class CodexAcpServer {
             }
         }
         sessionState.currentTurnId = null;
+        // Snapshot the prior turn's usage before resetting, so the proactive
+        // model-switch compaction guard (run below once the model is resolved)
+        // can compare the conversation's current size against the newly-selected
+        // model's real context window. See `previousTurnTokenUsage`.
+        sessionState.previousTurnTokenUsage = sessionState.lastTokenUsage;
         sessionState.lastTokenUsage = null;
 
         const activePrompt = this.trackActivePrompt(params.sessionId);
@@ -2036,6 +2066,30 @@ export class CodexAcpServer {
             if (!sessionState.supportedInputModalities.includes("image") && params.prompt.some(b => b.type === "image")) {
                 throw RequestError.invalidRequest("The current model does not support image input");
             }
+
+            // Proactive model-switch compaction guard.
+            //
+            // When the user switches mid-session to a model with a SMALLER real
+            // context window, the upstream codex binary's `ModelDownshift`
+            // pre-turn guard (`codex-rs/core/src/session/turn.rs`) should
+            // compact before forwarding — but it is INERT for every proxy-routed
+            // model: `model_info_from_slug` hardcodes `context_window: 272_000`
+            // for any slug not in codex's built-in table (all of deepseek/glm/
+            // qwen/kimi/mimo/gpt-oss), and codex-acp does not pass
+            // `model_context_window` to override it. So `old(272k) > new(272k)`
+            // is always false and the guard never fires — an oversized history
+            // goes through to the backend under the new smaller window and the
+            // IDE context ring shows >100%.
+            //
+            // Here we replicate the guard on the ACP side: resolve the NEW
+            // model's real window from the gateway's `/v1/models`, and if the
+            // prior turn's prompt size (input + cached, the full request that
+            // counts against the window) already meets/exceeds that window,
+            // compact BEFORE starting the turn. Mirrors claude-code-acp's
+            // pre-turn guard (`agent.ts:3240-3265`). The display cap in
+            // `createUsageUpdate` is the belt; this is the suspenders.
+            await this.maybeCompactForModelSwitch(params.sessionId, sessionState, modelId);
+
             const agentMode = sessionState.agentMode;
             const serviceTier = resolveFastServiceTier(
                 sessionState.fastModeEnabled,
@@ -2287,6 +2341,101 @@ export class CodexAcpServer {
             return null;
         }
         return toPromptUsage(lastTokenUsage);
+    }
+
+    /**
+     * Proactive model-switch compaction guard. If the prior turn's prompt size
+     * (input + cached tokens — the full request that counts against the context
+     * window) already meets/exceeds the newly-selected model's REAL context
+     * window, compact before forwarding the turn. See the call site for why the
+     * upstream codex `ModelDownshift` guard is inert for proxy models.
+     *
+     * No-op (returns without compacting) when any precondition is unmet:
+     *   - no custom gateway configured (can't query `/v1/models`)
+     *   - the resolver can't resolve a real window for the model (unknown model
+     *     or gateway unreachable) — without a real window we cannot tell
+     *     whether the history exceeds it, and the display cap is the only
+     *     backstop. We deliberately do NOT fall back to a hardcoded window,
+     *     which could trigger spurious compaction on a larger-window model.
+     *   - no prior turn usage yet (first turn of the session)
+     *
+     * Uses `previousTurnTokenUsage` (the snapshot from before `lastTokenUsage`
+     * was reset at prompt start) rather than `lastTokenUsage` (which is null at
+     * this point). Uses `inputTokens + cachedInputTokens` — the actual prompt
+     * size — rather than `totalTokens`, which also includes output/reasoning
+     * tokens that do NOT count against the next request's window.
+     *
+     * A small margin (90% of the window, matching codex's
+     * `effective_context_window_percent`) avoids compacting on a conversation
+     * that fits with a little headroom, reserving compaction for genuine
+     * overflow.
+     */
+    private async maybeCompactForModelSwitch(
+        sessionId: string,
+        sessionState: SessionState,
+        modelId: ModelId,
+    ): Promise<void> {
+        const baseUrl = this.codexAcpClient.getGatewayBaseUrl();
+        if (!baseUrl) {
+            return;
+        }
+        const priorUsage = sessionState.previousTurnTokenUsage;
+        if (!priorUsage) {
+            return;
+        }
+        // The prompt size that counts against the window for the NEXT request
+        // is the full input = non-cached + cached input tokens. `totalTokens`
+        // additionally includes output + reasoning tokens, which do not carry
+        // forward into the next request's prompt and so must NOT be counted
+        // here (counting them would compact too eagerly).
+        const promptSize = priorUsage.inputTokens + priorUsage.cachedInputTokens;
+        if (promptSize <= 0) {
+            return;
+        }
+
+        let realWindow: number | undefined;
+        try {
+            realWindow = await this.modelContextWindowResolver.resolve(baseUrl, modelId.model);
+        } catch {
+            // The resolver is engineered to never throw, but guard anyway so a
+            // resolver bug can never block the turn.
+            return;
+        }
+        if (realWindow == null || realWindow <= 0) {
+            return;
+        }
+
+        // Match codex's `effective_context_window_percent` (95%) with a small
+        // additional buffer so we only compact on genuine overflow, not a
+        // conversation that fits with headroom.
+        const threshold = Math.floor(realWindow * 0.9);
+        if (promptSize < threshold) {
+            return;
+        }
+
+        logger.log(
+            "Pre-turn compact for model switch",
+            {
+                sessionId,
+                model: modelId.model,
+                promptSize,
+                realWindow,
+                threshold,
+            },
+        );
+        try {
+            await this.runWithProcessCheck(
+                () => this.codexAcpClient.runCompact(sessionId),
+            );
+        } catch (err) {
+            // Compaction is a best-effort optimization. If it fails, let the
+            // turn proceed — the backend may still handle it, and the display
+            // cap keeps the ring from showing >100% regardless.
+            logger.error(
+                `Pre-turn compact for model switch failed (session ${sessionId})`,
+                err,
+            );
+        }
     }
 
     private async runWithProcessCheck<T>(operation: () => Promise<T>): Promise<T> {

@@ -295,6 +295,19 @@ export class CodexAcpClient {
     }
 
     /**
+     * The configured custom-gateway base URL (no headers), or `null` when no
+     * gateway is configured. Used by `CodexAcpServer`'s proactive model-switch
+     * compaction guard to query the gateway's `/v1/models` for the real
+     * `context_length` of the about-to-be-used model — the value codex's own
+     * `ModelDownshift` guard cannot see (it falls back to 272k for every proxy
+     * slug). Exposes only non-secret routing, mirroring `listProviders`'s
+     * `current.baseUrl`.
+     */
+    getGatewayBaseUrl(): string | null {
+        return this.gatewayConfig?.config.base_url ?? null;
+    }
+
+    /**
      * `providers/set`: replaces the full configuration for the custom gateway
      * provider. Rejects unknown provider ids with `invalid_params`.
      */

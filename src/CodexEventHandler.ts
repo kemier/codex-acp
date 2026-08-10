@@ -818,9 +818,24 @@ export class CodexEventHandler {
             return null;
         }
 
+        // Cap `used` at `size` so the IDE context ring never shows >100%.
+        // The upstream codex binary's `ModelDownshift` pre-turn compaction guard
+        // (codex-rs/core/src/session/turn.rs) is inert for proxy-routed models:
+        // `model_info_from_slug` hardcodes `context_window: 272_000` for every
+        // unknown slug, so `old_context_window > new_context_window` is always
+        // false and the guard never fires on a large→small model switch. The
+        // oversized history then goes through under the new (smaller) real
+        // window, and the `ThreadTokenUsageUpdated` notification can carry
+        // `last.totalTokens` > `modelContextWindow`. Capping here mirrors
+        // claude-code-acp (`agent.ts: Math.min(estimated, contextWindow)`) and
+        // keeps the display honest-to-the-window even when the upstream guard
+        // misses. The proactive compaction in `SessionManager.sendPrompt`
+        // prevents the overflow itself; this cap is the display backstop.
+        const cappedUsed = Math.min(used, size);
+
         return {
             sessionUpdate: "usage_update",
-            used,
+            used: cappedUsed,
             size,
         };
     }
