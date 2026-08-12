@@ -426,11 +426,32 @@ export class CodexAcpClient {
         }
     }
 
-    async deleteSession(sessionId: string): Promise<void> {
-        await this.codexClient.threadArchive({threadId: sessionId});
+   async deleteSession(sessionId: string): Promise<void> {
+       await this.codexClient.threadArchive({threadId: sessionId});
+   }
+
+    async forkSession(request: acp.ForkSessionRequest): Promise<SessionMetadata> {
+        const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories, request._meta);
+        await this.refreshSkills(request.cwd, additionalDirectories);
+
+        const response = await this.codexClient.threadFork({
+            threadId: request.sessionId,
+            cwd: request.cwd,
+        });
+        const codexModels = await this.fetchAvailableModels();
+        const currentModelId = this.createModelId(codexModels, response.model, response.reasoningEffort).toString();
+        return {
+            sessionId: response.thread.id,
+            currentModelId: currentModelId,
+            models: codexModels,
+            collaborationMode: this.getCollaborationMode(response.thread.id),
+            modelProvider: response.modelProvider,
+            currentServiceTier: response.serviceTier as ServiceTier ?? null,
+            additionalDirectories,
+        };
     }
 
-    async runReview(
+   async runReview(
         sessionId: string,
         target: ReviewTarget,
         onTurnStarted?: (turnId: string, threadId: string) => void,
@@ -669,10 +690,27 @@ export class CodexAcpClient {
         });
     }
 
+    // Wait for all queued session notifications to be processed.
+    // A race can occur where a final `agent_message_chunk` notification arrives
+    // after the `TurnCompleted` notification has already resolved the queue.
+    // In that case the queue becomes empty momentarily, causing this method to
+    // return prematurely and truncate the final answer. To mitigate this, we
+    // introduce a short settling delay after an empty queue is observed. If a
+    // new notification is enqueued during the delay we continue draining.
     async waitForSessionNotifications(sessionId: string): Promise<void> {
         while (true) {
             const queue = this.sessionNotificationQueues.get(sessionId);
-            if (!queue) return;
+            if (!queue) {
+                // No pending queue; wait briefly to allow any in‑flight
+                // notifications to be enqueued before returning.
+                await new Promise(resolve => setTimeout(resolve, 50));
+                const retryQueue = this.sessionNotificationQueues.get(sessionId);
+                if (!retryQueue) {
+                    return;
+                }
+                await retryQueue;
+                continue;
+            }
             await queue;
         }
     }

@@ -261,13 +261,14 @@ export class CodexAcpServer {
                     embeddedContext: true,
                     image: true
                 },
-                sessionCapabilities: {
-                    resume: { },
-                    list: { },
-                    close: { },
-                    delete: { },
-                    additionalDirectories: {},
-                },
+              sessionCapabilities: {
+                   resume: { },
+                   list: { },
+                   close: { },
+                   delete: { },
+                   fork: { },
+                   additionalDirectories: {},
+               },
                 mcpCapabilities: {
                     acp: false,
                     http: true,
@@ -761,11 +762,20 @@ export class CodexAcpServer {
         const sessionState = this.sessions.get(_params.sessionId);
         if (!sessionState) throw new Error(`Session ${_params.sessionId} not found`);
 
-        this.applyModeChange(sessionState, _params.modeId);
-        return {};
+       this.applyModeChange(sessionState, _params.modeId);
+       return {};
+   }
+
+    async unstable_forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
+        logger.log("Forking session...", {sessionId: params.sessionId, cwd: params.cwd});
+        const response = await this.runWithProcessCheck(() => this.codexAcpClient.forkSession(params));
+        logger.log("Session forked", {sourceSessionId: params.sessionId, newSessionId: response.sessionId});
+        return {
+            sessionId: response.sessionId,
+        };
     }
 
-    async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
+   async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
         logger.log("Set session config option requested", {
             sessionId: params.sessionId,
             configId: params.configId,
