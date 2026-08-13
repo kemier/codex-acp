@@ -336,6 +336,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                 availabilityNux: null,
                 displayName: "gpt-5",
                 description: "test model",
+                modelSpecialty: null,
                 hidden: false,
                 supportedReasoningEfforts: [{ reasoningEffort: "medium", description: "balanced" }],
                 defaultReasoningEffort: "medium",
@@ -3062,6 +3063,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             availabilityNux: null,
             displayName: 'Codex 5.2',
             description: 'Coding model',
+            modelSpecialty: null,
             hidden: false,
             supportedReasoningEfforts: [
                 { reasoningEffort: 'high', description: 'Deep' },
@@ -3083,6 +3085,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             availabilityNux: null,
             displayName: 'Standard 5.1',
             description: 'Standard model',
+            modelSpecialty: null,
             hidden: false,
             supportedReasoningEfforts: [
                 { reasoningEffort: 'low', description: 'Fast' }

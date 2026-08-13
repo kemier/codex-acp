@@ -590,6 +590,7 @@ export function createTestModel(overrides?: Partial<Model>): Model {
         availabilityNux: null,
         displayName: id,
         description: `${id} model`,
+        modelSpecialty: null,
         hidden: false,
         supportedReasoningEfforts: [defaultEffort],
         defaultReasoningEffort: "medium",

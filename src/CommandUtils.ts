@@ -14,7 +14,7 @@ export function stripShellPrefix(command: string): string {
     const rest = nl === -1 ? "" : withoutShell.slice(nl + 1);
     // `cd <dir> && <inline rest>` — cd and the command share the first line.
     const cdAnd = firstLine.match(/^cd\s+(\S[^&]*?)\s*&&\s*(.+)$/);
-    if (cdAnd) {
+    if (cdAnd && cdAnd[2]) {
         const inline = cdAnd[2].trim();
         return rest ? `${inline}\n${rest}` : inline;
     }

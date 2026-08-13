@@ -47,13 +47,14 @@ describe('CodexACPAgent - initialize', () => {
                     embeddedContext: true,
                     image: true
                 },
-                sessionCapabilities: {
-                    resume: {},
-                    list: {},
-                    close: {},
-                    delete: {},
-                    additionalDirectories: {},
-                },
+               sessionCapabilities: {
+                   resume: {},
+                   list: {},
+                   close: {},
+                   delete: {},
+                   fork: {},
+                   additionalDirectories: {},
+               },
                 mcpCapabilities: {
                     acp: false,
                     http: true,
