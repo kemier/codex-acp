@@ -2,22 +2,24 @@ import {GOAL_CONTROL_METHOD} from "./AcpExtensions";
 import type {ThreadGoal} from "./app-server/v2";
 
 export interface ThreadGoalSnapshot {
-    objective: string;
-    status: ThreadGoal["status"];
-    tokenBudget: number | null;
-    timeUsedSeconds: number;
-    createdAt: number;
-    controlMethod: typeof GOAL_CONTROL_METHOD;
+   objective: string;
+   status: ThreadGoal["status"];
+   tokenBudget: number | null;
+    tokensUsed: number;
+   timeUsedSeconds: number;
+   createdAt: number;
+   controlMethod: typeof GOAL_CONTROL_METHOD;
 }
 
 export function toThreadGoalSnapshot(goal: ThreadGoal): ThreadGoalSnapshot {
     return {
-        objective: goal.objective.trim(),
-        status: goal.status,
-        tokenBudget: goal.tokenBudget,
-        timeUsedSeconds: goal.timeUsedSeconds,
-        createdAt: goal.createdAt,
-        controlMethod: GOAL_CONTROL_METHOD,
+       objective: goal.objective.trim(),
+       status: goal.status,
+       tokenBudget: goal.tokenBudget,
+        tokensUsed: goal.tokensUsed,
+       timeUsedSeconds: goal.timeUsedSeconds,
+       createdAt: goal.createdAt,
+       controlMethod: GOAL_CONTROL_METHOD,
     };
 }
 
