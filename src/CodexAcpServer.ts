@@ -839,14 +839,26 @@ export class CodexAcpServer {
         sessionState.agentMode = newMode;
     }
 
-    private async applyCollaborationModeChange(sessionState: SessionState, value: string): Promise<void> {
-        const mode = parseCollaborationMode(value);
-        if (mode === null) {
-            throw RequestError.invalidParams();
-        }
-        await this.codexAcpClient.setCollaborationMode(sessionState.sessionId, mode, sessionState.currentModelId);
-        sessionState.collaborationMode = mode;
-    }
+   private async applyCollaborationModeChange(sessionState: SessionState, value: string): Promise<void> {
+       const mode = parseCollaborationMode(value);
+       if (mode === null) {
+           throw RequestError.invalidParams();
+       }
+       await this.codexAcpClient.setCollaborationMode(sessionState.sessionId, mode, sessionState.currentModelId);
+       // If switching to plan mode while a turn is actively streaming,
+       // interrupt the current turn so the model stops editing code and
+       // the user can re-prompt in plan mode. Without this, the current
+       // turn continues in default mode (the mode change only applies to
+       // the next turn), so the model keeps editing files even though the
+       // user switched to plan mode mid-stream.
+       if (mode === PLAN_COLLABORATION_MODE && this.activePrompts.has(sessionState.sessionId)) {
+           logger.log("Interrupting active turn after switching to plan mode", {
+               sessionId: sessionState.sessionId,
+           });
+           await this.interruptSessionTurn(sessionState, "Plan mode switch", false);
+       }
+       sessionState.collaborationMode = mode;
+   }
 
     private applyModelChange(sessionState: SessionState, value: string): void {
         const model = sessionState.availableModels.find(m => m.id === value);
