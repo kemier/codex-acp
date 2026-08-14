@@ -303,7 +303,7 @@ export class CodexEventHandler {
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
         const phase = this.agentMessagePhases.get(event.itemId) ?? null;
-        return createAgentTextMessageChunk(event.delta, event.itemId, createCodexMessagePhaseMeta(phase));
+        return createAgentTextMessageChunk(event.delta, this.currentTurnMessageId(event.itemId), createCodexMessagePhaseMeta(phase));
     }
 
     private async createConfigWarningEvent(event: ConfigWarningNotification): Promise<UpdateSessionEvent> {
@@ -352,7 +352,7 @@ export class CodexEventHandler {
         event: ReasoningSummaryTextDeltaNotification | ReasoningTextDeltaNotification
     ): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent(event.delta, event.itemId);
+        return this.createAgentThoughtEvent(event.delta, this.currentTurnMessageId(event.itemId));
     }
 
     private createPlanDeltaEvent(event: PlanDeltaNotification): null {
@@ -371,7 +371,27 @@ export class CodexEventHandler {
 
     private createReasoningSectionBreakEvent(event: ReasoningSummaryPartAddedNotification): UpdateSessionEvent {
         this.seenReasoningDeltaItemIds.add(event.itemId);
-        return this.createAgentThoughtEvent("\n\n", event.itemId);
+        return this.createAgentThoughtEvent("\n\n", this.currentTurnMessageId(event.itemId));
+    }
+
+    /**
+     * Stable messageId for the CURRENT turn's streaming chunks.
+     *
+     * Codex creates a distinct `item.id` per output item, so text before a
+     * tool call and text after it carry different item ids. vscode-acp's
+     * bubble reattach (text→tool→text = one assistant message) keys on
+     * messageId: with per-item ids the reattach never matches and the
+     * continuation renders as a NEW bubble (e.g. "The" alone, then the rest).
+     *
+     * Using a turn-scoped id makes all `agent_message_chunk` /
+     * `agent_thought_chunk` deltas of one turn share one messageId, so
+     * vscode-acp keeps text before and after a tool call in a single bubble.
+     * Falls back to the item id when no turn is active (warnings, config
+     * notices, non-turn events) so those never fuse across turns.
+     */
+    private currentTurnMessageId(itemId: string): string {
+        const turnId = this.sessionState.currentTurnId;
+        return turnId ? `turn-${turnId}` : itemId;
     }
 
     private createAgentThoughtEvent(text: string, messageId: string): UpdateSessionEvent {
@@ -512,7 +532,7 @@ export class CodexEventHandler {
         if (text.length === 0) {
             return null;
         }
-        return this.createAgentThoughtEvent(text, item.id);
+        return this.createAgentThoughtEvent(text, this.currentTurnMessageId(item.id));
     }
 
     private async createCompletedPlanEvent(
@@ -533,7 +553,7 @@ export class CodexEventHandler {
             await this.enqueuePlanSnapshot(item.id, text);
             return null;
         }
-        return this.createPlanTextEvent(text, item.id);
+        return this.createPlanTextEvent(text, this.currentTurnMessageId(item.id));
     }
 
     private schedulePlanUpdate(): void {

@@ -859,6 +859,9 @@ describe('ACP server test', { timeout: 40_000 }, () => {
     function loadNotifications(){
         //TODO collect logs form dev run and then load them from file to speedup
         const serverNotifications: ServerNotification[] = [
+            // Turn lifecycle first (as in production): deltas of this turn
+            // then share the turn-scoped messageId `turn-turn-id`.
+            { method: "turn/started", params: { threadId: "string", turn: createTurn("turn-id", "inProgress") }},
             { method: "item/agentMessage/delta", params: { threadId: "string", turnId: "string", itemId: "string", delta: "He", }},
             { method: "item/agentMessage/delta", params: { threadId: "string", turnId: "string", itemId: "string", delta: "ll", }},
             { method: "item/agentMessage/delta", params: { threadId: "string", turnId: "string", itemId: "string", delta: "o!", }},
