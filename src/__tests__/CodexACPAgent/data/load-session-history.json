@@ -102,6 +102,7 @@
               "objective": "Keep the restored migration green",
               "status": "paused",
               "tokenBudget": null,
+              "tokensUsed": 42,
               "timeUsedSeconds": 46,
               "createdAt": 1710000000,
               "controlMethod": "_codex/session/goal_control"

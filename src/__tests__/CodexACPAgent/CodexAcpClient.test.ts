@@ -1740,6 +1740,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
                             objective: "Ship the migration and keep tests green",
                             status: "active",
                             tokenBudget: null,
+                            tokensUsed: 0,
                             timeUsedSeconds: 0,
                             createdAt: 1710000000,
                             controlMethod: "_codex/session/goal_control",

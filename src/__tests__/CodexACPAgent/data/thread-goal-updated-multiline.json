@@ -11,6 +11,7 @@
               "objective": "First task\nSecond task",
               "status": "budgetLimited",
               "tokenBudget": 1000,
+              "tokensUsed": 1000,
               "timeUsedSeconds": 30,
               "createdAt": 1710000000,
               "controlMethod": "_codex/session/goal_control"
