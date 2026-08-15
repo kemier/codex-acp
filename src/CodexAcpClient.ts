@@ -589,7 +589,10 @@ export class CodexAcpClient {
             return;
         }
 
-        const skillExtraRoots = additionalRoots.map(root => path.join(root, ".agents", "skills"));
+        // Preserve the client's path form instead of using path.join, whose
+        // platform separators mangle forward-slash paths on Windows (and drop
+        // the leading slash). Codex accepts forward slashes on all platforms.
+        const skillExtraRoots = additionalRoots.map(root => `${root.replace(/\\/g, "/")}/.agents/skills`);
         if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {
             await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });
             this.skillExtraRoots = skillExtraRoots;

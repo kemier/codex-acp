@@ -856,6 +856,41 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         });
     });
 
+    it.skipIf(process.platform !== "win32")('normalizes Windows additional directories for skill discovery', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const codexAcpClient = mockFixture.getCodexAcpClient();
+        const codexAppServerClient = mockFixture.getCodexAppServerClient();
+
+        const extraRootsSetSpy = vi.spyOn(codexAppServerClient, "skillsExtraRootsSet").mockResolvedValue(undefined);
+        const listSkillsSpy = vi.spyOn(codexAppServerClient, "listSkills").mockResolvedValue({data: []});
+        vi.spyOn(codexAppServerClient, "threadStart").mockResolvedValue({
+            thread: {id: "thread-id"} as any,
+            model: "gpt-5",
+            reasoningEffort: "medium",
+            serviceTier: null,
+        } as any);
+        vi.spyOn(codexAppServerClient, "listModels").mockResolvedValue({
+            data: [createTestModel({id: "gpt-5"})],
+            nextCursor: null,
+        });
+
+        await codexAcpClient.newSession({
+            cwd: "C:\\workspace",
+            additionalDirectories: ["C:\\workspace\\extra"],
+            mcpServers: [],
+        });
+
+        // Extra roots must use forward slashes (path.join's backslashes would
+        // mangle the path); listSkills cwds keep the client's form.
+        expect(extraRootsSetSpy).toHaveBeenCalledWith({
+            extraRoots: ["C:/workspace/extra/.agents/skills"],
+        });
+        expect(listSkillsSpy).toHaveBeenCalledWith({
+            cwds: ["C:\\workspace", "C:\\workspace\\extra"],
+            forceReload: true,
+        });
+    });
+
     function loadNotifications(){
         //TODO collect logs form dev run and then load them from file to speedup
         const serverNotifications: ServerNotification[] = [
@@ -1037,7 +1072,7 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(mockFixture.getAcpConnectionDump([])).toMatchFileSnapshot("data/multiple-sessions.json");
     });
 
-    it('should complete concurrent prompts by matching thread and turn id', async () => {
+    it('should complete concurrent prompts without cross-thread pollution', async () => {
         const mockFixture = createCodexMockTestFixture();
         const codexAcpAgent = mockFixture.getCodexAcpAgent();
 
@@ -1078,15 +1113,21 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             prompt1Settled = true;
         });
 
-        mockFixture.sendServerNotification(createTurnCompletedNotification("session-1", "old-turn"));
+        // A completion on a thread with no pending prompt is dropped.
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-3", "old-turn"));
         await flushAsyncWork();
         expect(prompt1Settled).toBe(false);
 
+        // A completion on session-2 resolves only prompt2, never prompt1.
         mockFixture.sendServerNotification(createTurnCompletedNotification("session-2", "turn-2"));
         await expect(prompt2).resolves.toMatchObject({stopReason: "end_turn"});
         expect(prompt1Settled).toBe(false);
 
-        mockFixture.sendServerNotification(createTurnCompletedNotification("session-1", "turn-1"));
+        // Turns on a thread run serially, so a completion with a different
+        // turn id means the awaited turn was superseded by a continuation turn
+        // (codex never emits turn/completed for the outer goal turn). The sole
+        // pending prompt on session-1 resolves with the continuation's event.
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-1", "continuation-turn"));
         await expect(prompt1).resolves.toMatchObject({stopReason: "end_turn"});
     });
 
@@ -1190,6 +1231,57 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await expect(promptPromise).resolves.toMatchObject({stopReason: "end_turn"});
         expect(mockFixture.getAcpConnectionDump([])).toContain("tail output");
         turnInterrupt.resolve(undefined);
+    });
+
+    it('resolves the awaited turn when the server completes it with the matching id', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const client = mockFixture.getCodexAppServerClient();
+        vi.spyOn(client, "turnStart").mockResolvedValue({
+            turn: createTurn("outer-turn-id", "inProgress"),
+        });
+
+        const runTurnPromise = client.runTurn({
+            threadId: "session-id",
+            input: [{ type: "text", text: "hi", text_elements: [] }],
+        });
+
+        // Wait until runTurn registered its pending resolver for the outer turn.
+        await flushAsyncWork();
+
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "outer-turn-id"));
+
+        await expect(runTurnPromise).resolves.toMatchObject({
+            threadId: "session-id",
+            turn: { id: "outer-turn-id", status: "completed" },
+        });
+    });
+
+    it('resolves a superseded turn when the server completes a continuation turn instead', async () => {
+        const mockFixture = createCodexMockTestFixture();
+        const client = mockFixture.getCodexAppServerClient();
+        vi.spyOn(client, "turnStart").mockResolvedValue({
+            turn: createTurn("outer-turn-id", "inProgress"),
+        });
+
+        const runTurnPromise = client.runTurn({
+            threadId: "session-id",
+            input: [{ type: "text", text: "hi", text_elements: [] }],
+        });
+
+        // Wait until runTurn registered its pending resolver for the outer turn.
+        await flushAsyncWork();
+
+        // When the outer goal turn finishes, the codex app server spawns a
+        // goal-verification continuation turn and only emits turn/completed
+        // for the continuation's id; the awaited outer turn never reports its
+        // own completion. The bridge must resolve the superseded turn instead
+        // of leaving the prompt hanging.
+        mockFixture.sendServerNotification(createTurnCompletedNotification("session-id", "continuation-turn-id"));
+
+        await expect(runTurnPromise).resolves.toMatchObject({
+            threadId: "session-id",
+            turn: { id: "continuation-turn-id", status: "completed" },
+        });
     });
 
     it('interrupts a late-started turn after the ACP prompt request is cancelled', async () => {
