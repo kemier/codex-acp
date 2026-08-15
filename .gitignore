@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.log
+.npmrc
 .DS_Store
 .idea/
 tmp/
