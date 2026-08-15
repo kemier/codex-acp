@@ -712,6 +712,19 @@ export class CodexAppServerClient {
 
         const captures = this.turnCompletionCaptures.get(event.threadId);
         if (!captures) {
+            // Turns on a thread run serially, so a `turn/completed` whose id
+            // matches no pending resolver means the awaited turn was superseded
+            // by a server-side continuation turn (codex spawns a goal-verification
+            // turn right after the outer goal turn finishes and only emits
+            // `turn/completed` for the continuation's id). Fall back to the
+            // thread's sole pending resolver instead of hanging the prompt.
+            if (threadResolvers && threadResolvers.size === 1) {
+                const [awaitedTurnId, pendingResolve] = [...threadResolvers.entries()][0]!;
+                if (awaitedTurnId !== event.turn.id) {
+                    this.pendingTurnCompletionResolvers.delete(event.threadId);
+                    pendingResolve(event);
+                }
+            }
             return;
         }
         for (const capture of captures) {
