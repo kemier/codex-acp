@@ -98,6 +98,9 @@ import {
 const IMPLEMENT_PLAN_OPTION_ID = "implement_plan";
 const REVISE_PLAN_OPTION_ID = "revise_plan";
 
+/** Why an in-flight turn was interrupted; surfaced in log lines. */
+type InterruptRequestName = "Cancel" | "Close" | "Plan mode switch";
+
 export interface SessionState {
     sessionId: string,
     currentModelId: string,
@@ -1823,7 +1826,7 @@ export class CodexAcpServer {
 
     private async interruptPromptTurn(
         turn: { threadId: string, turnId: string },
-        requestName: "Cancel" | "Close",
+        requestName: InterruptRequestName,
     ): Promise<void> {
         this.codexAcpClient.markTurnStale({
             threadId: turn.threadId,
@@ -1841,7 +1844,7 @@ export class CodexAcpServer {
 
     private async requestTurnInterrupt(
         turn: { threadId: string, turnId: string },
-        requestName: "Cancel" | "Close",
+        requestName: InterruptRequestName,
     ): Promise<void> {
         try {
             await this.runWithProcessCheck(() => this.codexAcpClient.turnInterrupt({
@@ -1867,7 +1870,7 @@ export class CodexAcpServer {
 
     private async interruptSessionTurn(
         sessionState: SessionState,
-        requestName: "Cancel" | "Close",
+        requestName: InterruptRequestName,
         resolveInterruptedTurn: boolean,
     ): Promise<void> {
         const turnId = await this.getInterruptibleTurnId(sessionState, requestName);
@@ -1908,7 +1911,7 @@ export class CodexAcpServer {
 
     private async getInterruptibleTurnId(
         sessionState: SessionState,
-        requestName: "Cancel" | "Close",
+        requestName: InterruptRequestName,
     ): Promise<string | null> {
         if (sessionState.currentTurnId) {
             return sessionState.currentTurnId;
