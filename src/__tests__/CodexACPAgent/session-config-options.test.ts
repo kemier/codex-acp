@@ -267,6 +267,71 @@ describe("Session config options", () => {
         expect(codexAcpAgent.getSessionState("session-id").currentModelId).toBe("fast-model[high]");
     });
 
+    it("persists the reasoning effort to the core thread metadata on change", async () => {
+        const {fast} = buildModels();
+        const {codexAcpAgent, codexAcpClient} = await createSession("fast-model[medium]", [fast]);
+        const update = vi.spyOn((codexAcpClient as any).codexClient, "threadSettingsUpdate").mockResolvedValue(undefined);
+
+        await codexAcpAgent.setSessionConfigOption({
+            sessionId: "session-id",
+            configId: REASONING_EFFORT_CONFIG_ID,
+            value: "high",
+        });
+
+        expect(update).toHaveBeenCalledWith(expect.objectContaining({
+            threadId: "session-id",
+            model: "fast-model",
+            effort: "high",
+        }));
+    });
+
+    it("persists the model and kept effort to the core thread metadata on model change", async () => {
+        const {fast, slow} = buildModels();
+        const {codexAcpAgent, codexAcpClient} = await createSession("fast-model[medium]", [fast, slow]);
+        const update = vi.spyOn((codexAcpClient as any).codexClient, "threadSettingsUpdate").mockResolvedValue(undefined);
+
+        await codexAcpAgent.setSessionConfigOption({
+            sessionId: "session-id",
+            configId: MODEL_CONFIG_ID,
+            value: "slow-model",
+        });
+
+        // slow-model supports only low/medium; the unchanged effort "medium"
+        // is kept and must be persisted alongside the new model.
+        expect(codexAcpAgent.getSessionState("session-id").currentModelId).toBe("slow-model[medium]");
+        expect(update).toHaveBeenCalledWith(expect.objectContaining({
+            threadId: "session-id",
+            model: "slow-model",
+            effort: "medium",
+        }));
+    });
+
+    it("persists the model/effort via unstable_setSessionModel", async () => {
+        const {fast} = buildModels();
+        const extraModel = createTestModel({
+            id: "extra-model",
+            displayName: "Extra model",
+            description: "Added after session start",
+            supportedReasoningEfforts: [mediumEffort, highEffort],
+            defaultReasoningEffort: "medium",
+        });
+        const {codexAcpAgent, codexAcpClient} = await createSession("fast-model[medium]", [fast]);
+        const update = vi.spyOn((codexAcpClient as any).codexClient, "threadSettingsUpdate").mockResolvedValue(undefined);
+        const fetchModels = vi.spyOn(codexAcpClient, "fetchAvailableModels").mockResolvedValue([fast, extraModel]);
+
+        await codexAcpAgent.unstable_setSessionModel({
+            sessionId: "session-id",
+            modelId: "extra-model[high]",
+        });
+
+        expect(fetchModels).toHaveBeenCalled();
+        expect(update).toHaveBeenCalledWith(expect.objectContaining({
+            threadId: "session-id",
+            model: "extra-model",
+            effort: "high",
+        }));
+    });
+
     it("refreshes the cached model list when unstable_setSessionModel picks a freshly fetched model", async () => {
         const fixture = createCodexMockTestFixture();
         const codexAcpAgent = fixture.getCodexAcpAgent();

@@ -773,6 +773,28 @@ export class CodexAcpClient {
         });
     }
 
+    /**
+     * Persists the model/reasoning-effort selection to the Codex core so it
+     * survives a thread resume after the ACP process (or VS Code) restarts.
+     *
+     * Without this, `session/set_config_option` for model or reasoning_effort
+     * only updated the in-memory `currentModelId`: the core's ThreadMetadata
+     * kept the old value until the next `/turn` emitted a ThreadSettingsApplied
+     * rollout item, so a restart before the next prompt silently reverted the
+     * effort the user had picked.
+     *
+     * `thread/settings/update` applies the change immediately and emits the
+     * effective snapshot as a ThreadSettingsApplied event, which the thread
+     * store observes and persists into metadata (`reasoning_effort` column).
+     */
+    async setModelAndEffort(sessionId: string, model: string, effort: ReasoningEffort): Promise<void> {
+        await this.codexClient.threadSettingsUpdate({
+            threadId: sessionId,
+            model,
+            effort: effort as ReasoningEffort,
+        });
+    }
+
     private getCollaborationMode(sessionId: string): ModeKind {
         return this.codexClient.getThreadSettings(sessionId)?.collaborationMode.mode ?? "default";
     }

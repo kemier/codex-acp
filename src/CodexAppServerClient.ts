@@ -999,7 +999,7 @@ type DistributiveOmit<T, K extends keyof any> = T extends any
 
 export interface ExperimentalThreadSettingsUpdateParams {
     threadId: string;
-    collaborationMode: {
+    collaborationMode?: {
         mode: "default" | "plan";
         settings: {
             model: string;
@@ -1007,6 +1007,10 @@ export interface ExperimentalThreadSettingsUpdateParams {
             developer_instructions: string | null;
         };
     };
+    /** Override the model for subsequent turns (persisted to thread metadata). */
+    model?: string;
+    /** Override the reasoning effort for subsequent turns (persisted to thread metadata). */
+    effort?: string | null;
 }
 
 type McpServerStartupSnapshot = {

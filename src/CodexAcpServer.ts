@@ -818,10 +818,10 @@ export class CodexAcpServer {
                 await this.applyCollaborationModeChange(sessionState, this.stringConfigValue(params));
                 break;
             case MODEL_CONFIG_ID:
-                this.applyModelChange(sessionState, this.stringConfigValue(params));
+                await this.applyModelChange(sessionState, this.stringConfigValue(params));
                 break;
             case REASONING_EFFORT_CONFIG_ID:
-                this.applyReasoningEffortChange(sessionState, this.stringConfigValue(params));
+                await this.applyReasoningEffortChange(sessionState, this.stringConfigValue(params));
                 break;
             default:
                 throw RequestError.invalidParams();
@@ -876,7 +876,7 @@ export class CodexAcpServer {
        sessionState.collaborationMode = mode;
    }
 
-    private applyModelChange(sessionState: SessionState, value: string): void {
+    private async applyModelChange(sessionState: SessionState, value: string): Promise<void> {
         const model = sessionState.availableModels.find(m => m.id === value);
         if (!model) {
             const currentModel = ModelId.fromString(sessionState.currentModelId).model;
@@ -889,15 +889,17 @@ export class CodexAcpServer {
         const effort = findSupportedEffort(model.supportedReasoningEfforts, currentEffort)
             ?? model.defaultReasoningEffort;
         this.applyModelAndEffort(sessionState, model, effort);
+        await this.persistModelAndEffort(sessionState);
     }
 
-    private applyReasoningEffortChange(sessionState: SessionState, value: string): void {
+    private async applyReasoningEffortChange(sessionState: SessionState, value: string): Promise<void> {
         const effort = findSupportedEffort(sessionState.supportedReasoningEfforts, value);
         if (!effort) {
             throw RequestError.invalidParams();
         }
         const {model} = ModelId.fromString(sessionState.currentModelId);
         sessionState.currentModelId = ModelId.create(model, effort).toString();
+        await this.persistModelAndEffort(sessionState);
     }
 
     private applyModelAndEffort(sessionState: SessionState, model: Model, effort: ReasoningEffort): void {
@@ -905,6 +907,31 @@ export class CodexAcpServer {
         sessionState.supportedReasoningEfforts = model.supportedReasoningEfforts;
         sessionState.supportedInputModalities = model.inputModalities;
         sessionState.currentModelSupportsFast = modelSupportsFast(model);
+    }
+
+    /**
+     * Persists the current in-memory model/effort selection to the Codex core
+     * so it survives an ACP/VS Code restart (see CodexAcpClient.setModelAndEffort
+     * for why this is required). Failures are logged but never fail the config
+     * change — the in-memory state is already authoritative for the session.
+     */
+    private async persistModelAndEffort(sessionState: SessionState): Promise<void> {
+        const modelId = ModelId.fromString(sessionState.currentModelId);
+        try {
+            await this.codexAcpClient.setModelAndEffort(sessionState.sessionId, modelId.model, modelId.effort as ReasoningEffort);
+            logger.log("Persisted model/effort to core thread metadata", {
+                sessionId: sessionState.sessionId,
+                model: modelId.model,
+                effort: modelId.effort,
+            });
+        } catch (err) {
+            logger.error("Failed to persist model/effort to core thread metadata", {
+                sessionId: sessionState.sessionId,
+                model: modelId.model,
+                effort: modelId.effort,
+                error: err,
+            });
+        }
     }
 
     async unstable_setSessionModel(params: LegacySetSessionModelRequest): Promise<LegacySetSessionModelResponse> {
@@ -934,6 +961,7 @@ export class CodexAcpServer {
 
         sessionState.availableModels = models;
         this.applyModelAndEffort(sessionState, model, reasoningEffort);
+        await this.persistModelAndEffort(sessionState);
 
         return {};
     }
