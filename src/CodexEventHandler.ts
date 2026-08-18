@@ -98,6 +98,16 @@ export class CodexEventHandler {
     private readonly terminalCommandOutputIds = new Set<string>();
     private readonly agentMessagePhases = new Map<string, string | null>();
     private readonly activeSubAgentActivities = new Set<string>();
+    /**
+     * Active overload-retry context for the current prompt. While non-null, a
+     * `serverOverloaded` error notification records the failure (so the prompt
+     * loop can retry with backoff) but surfaces only a one-line "retrying"
+     * notice to the client — and only for the FIRST failed attempt; subsequent
+     * attempts stay silent to avoid scrolling repeated notices. Cleared by
+     * {@link resetForRetry} at each retry boundary.
+     */
+    private retryContext: { attempt: number; maxAttempts: number } | null = null;
+    private retryNoticeEmitted = false;
 
     constructor(
         connection: AcpClientConnection,
@@ -111,6 +121,59 @@ export class CodexEventHandler {
 
     getFailure(): RequestError | null {
         return this.failure;
+    }
+
+    /**
+     * Resets the per-turn state between retry attempts of the same prompt.
+     * A failed turn (e.g. upstream 503 overload) may have recorded a failure
+     * and partial per-item state; clearing them prevents a retried turn from
+     * being suppressed by dedup sets or carrying a stale failure forward.
+     */
+    resetForRetry(): void {
+        this.failure = null;
+        this.completedPlan = null;
+        this.cancelPlanUpdateTimer();
+        this.pendingPlanItemIds.clear();
+        this.planDeltaTextByItemId.clear();
+        this.lastEmittedPlanTextByItemId.clear();
+        this.seenReasoningDeltaItemIds.clear();
+        this.agentMessagePhases.clear();
+        this.terminalCommandIds.clear();
+        this.terminalCommandOutputIds.clear();
+        this.activeFuzzyFileSearchSessions.clear();
+        this.activeGuardianApprovalReviews.clear();
+        this.activeImageGenerationItems.clear();
+        this.emittedImageViewItems.clear();
+        this.activeSubAgentActivities.clear();
+        this.retryContext = null;
+        // NOTE: retryNoticeEmitted intentionally survives resetForRetry() —
+        // it is per-prompt (the handler is recreated for each prompt), and we
+        // want the one-line "retrying" notice to appear only once across all
+        // retry attempts of the same prompt, not once per attempt.
+    }
+
+    /**
+     * Sets the overload-retry context for the upcoming turn attempt. While
+     * active, a `serverOverloaded` error is surfaced to the client as a short
+     * "retrying" notice (not the raw error) and the failure is recorded so the
+     * prompt loop can retry. The notice is emitted only once per prompt —
+     * later attempts in the same retry loop stay silent. Cleared automatically
+     * by {@link resetForRetry}.
+     */
+    setRetryContext(attempt: number, maxAttempts: number): void {
+        this.retryContext = { attempt, maxAttempts };
+    }
+
+    /**
+     * Returns true when the recorded failure is a server overload (503 /
+     * "model at capacity") — the case the prompt loop retries with backoff.
+     */
+    isServerOverloadedFailure(): boolean {
+        if (this.failure === null) return false;
+        const data = this.failure.data;
+        if (data === null || typeof data !== "object") return false;
+        const info = (data as { codexErrorInfo?: unknown }).codexErrorInfo;
+        return info === "serverOverloaded";
     }
 
     takeCompletedPlan(): CompletedPlan | null {
@@ -750,7 +813,7 @@ export class CodexEventHandler {
         }
     }
 
-    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent> {
+    private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent | null> {
         const error = params.error.codexErrorInfo;
         if (params.willRetry) {
             return this.createCodexSessionInfoUpdate({
@@ -760,6 +823,26 @@ export class CodexEventHandler {
                     willRetry: true,
                 },
             });
+        } else if (error === "serverOverloaded" && this.retryContext !== null) {
+            // Retryable overload (upstream 503 "model at capacity"): record the
+            // failure so prompt() can retry with backoff, but only surface a
+            // subtle notice to the client — the raw error would be replaced by
+            // the eventual successful response anyway. The server-side retry
+            // loop emits the final error text only after retries are exhausted.
+            this.failure = RequestError.internalError(
+                this.createTurnErrorData(params.error),
+            );
+            if (!this.retryNoticeEmitted) {
+                this.retryNoticeEmitted = true;
+                const maxAttempts = this.retryContext.maxAttempts;
+                return createAgentTextMessageChunk(
+                    maxAttempts > 1
+                        ? `The model is at capacity — retrying with backoff ` +
+                          `(attempt ${this.retryContext.attempt}/${maxAttempts}).\n\n`
+                        : "The model is at capacity — retrying with backoff…\n\n",
+                );
+            }
+            return null;
         } else if (error === "usageLimitExceeded") {
             this.failure = RequestError.internalError(
                 this.createTurnErrorData(params.error),

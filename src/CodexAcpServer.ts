@@ -14,6 +14,7 @@ import type {
     ReasoningEffortOption,
     Thread,
     ThreadItem,
+    TurnCompletedNotification,
     UserInput
 } from "./app-server/v2";
 import type {RateLimitsMap} from "./RateLimitsMap";
@@ -175,6 +176,18 @@ export class CodexAcpServer {
         mini: "Mini",
         codex: "Codex",
     };
+
+    /**
+     * Retry-on-overload policy. When a turn fails with `serverOverloaded`
+     * (upstream 503 "model at capacity"), the prompt is retried with
+     * exponential backoff rather than surfacing the error immediately —
+     * mirroring ericli's hold-the-model behavior. The retried turn reuses the
+     * SAME model (no fallback swap): a saturated backend queue would reject a
+     * fallback's identical large payload too.
+     */
+    private static readonly OVERLOAD_RETRY_ATTEMPTS = 5;
+    private static readonly OVERLOAD_RETRY_BASE_DELAY_MS = 2_000;
+    private static readonly OVERLOAD_RETRY_MAX_DELAY_MS = 30_000;
 
     private readonly codexAcpClient: CodexAcpClient;
     private readonly connection: AcpClientConnection;
@@ -2121,54 +2134,95 @@ export class CodexAcpServer {
                 sessionState.currentModelSupportsFast,
             );
             ensurePendingTurnStart();
-            const sendPromptPromise = this.runWithProcessCheck(
-                () => this.codexAcpClient.sendPrompt(
-                    params,
-                    agentMode,
-                    modelId,
-                    serviceTier,
-                    disableSummary,
-                    sessionState.cwd,
-                    sessionState.additionalDirectories,
-                    (turnId) => {
-                        const turn = {threadId: params.sessionId, turnId};
-                        activePrompt.currentTurn = turn;
-                        if (this.promptShouldStop(params.sessionId, activePrompt)) {
-                            this.interruptLateStartedTurn(turn);
-                            return;
-                        }
-                        sessionState.currentTurnId = turnId;
-                        pendingTurnStart?.resolve(turnId);
-                        onTurnStarted?.();
-                    },
-                    () => this.promptShouldStop(params.sessionId, activePrompt),
-                ));
-            void sendPromptPromise.catch((err) => {
-                if (this.activePrompts.get(params.sessionId) !== activePrompt) {
-                    logger.error(`Prompt for cancelled session ${params.sessionId} failed after prompt returned`, err);
+            // ── Retry-on-overload loop ─────────────────────────────────────
+            // A `serverOverloaded` failure (upstream 503 "model at capacity")
+            // is transient: the turn is retried with exponential backoff on
+            // the SAME model instead of surfacing the error immediately (or
+            // swapping to a fallback, which would re-enqueue an identical
+            // large payload into the still-saturated queue). The retried turn
+            // reuses the same event handler/subscription; per-attempt state is
+            // cleared via resetForRetry(). The client sees a one-line
+            // "retrying" notice (set for the first attempt only) rather than
+            // the raw error.
+            const overloadRetryAttempts = this.getOverloadRetryAttempts();
+            let turnCompleted: TurnCompletedNotification | null = null;
+            for (let retryAttempt = 0; ; retryAttempt++) {
+                const moreRetriesAvailable = retryAttempt < overloadRetryAttempts - 1;
+                // Track the retry context so a serverOverloaded failure during
+                // THIS attempt records the failure and (for the first attempt
+                // only, see CodexEventHandler.createErrorEvent) shows a short
+                // "retrying" notice instead of the raw error. When no retries
+                // remain, context stays unset → the raw error surfaces.
+                if (moreRetriesAvailable) {
+                    eventHandler.setRetryContext(retryAttempt + 1, overloadRetryAttempts);
                 }
-            });
-            let turnCompleted = await Promise.race([
-                sendPromptPromise,
-                activePrompt.closeSignal,
-                this.cancelBeforeTurnStarted(activePrompt),
-            ]);
+                const sendPromptPromise = this.runWithProcessCheck(
+                    () => this.codexAcpClient.sendPrompt(
+                        params,
+                        agentMode,
+                        modelId,
+                        serviceTier,
+                        disableSummary,
+                        sessionState.cwd,
+                        sessionState.additionalDirectories,
+                        (turnId) => {
+                            const turn = {threadId: params.sessionId, turnId};
+                            activePrompt.currentTurn = turn;
+                            if (this.promptShouldStop(params.sessionId, activePrompt)) {
+                                this.interruptLateStartedTurn(turn);
+                                return;
+                            }
+                            sessionState.currentTurnId = turnId;
+                            pendingTurnStart?.resolve(turnId);
+                            onTurnStarted?.();
+                        },
+                        () => this.promptShouldStop(params.sessionId, activePrompt),
+                    ));
+                void sendPromptPromise.catch((err) => {
+                    if (this.activePrompts.get(params.sessionId) !== activePrompt) {
+                        logger.error(`Prompt for cancelled session ${params.sessionId} failed after prompt returned`, err);
+                    }
+                });
+                turnCompleted = await Promise.race([
+                    sendPromptPromise,
+                    activePrompt.closeSignal,
+                    this.cancelBeforeTurnStarted(activePrompt),
+                ]);
 
-            if (turnCompleted === null) {
-                return this.cancelledPromptResponse(sessionState);
-            }
+                if (turnCompleted === null) {
+                    return this.cancelledPromptResponse(sessionState);
+                }
 
-            await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
+                await this.codexAcpClient.waitForSessionNotifications(params.sessionId);
 
-            if (turnCompleted.turn.status === "interrupted") {
-                await eventHandler.flushPendingPlanUpdates();
-                return this.cancelledPromptResponse(sessionState);
-            }
+                if (turnCompleted.turn.status === "interrupted") {
+                    await eventHandler.flushPendingPlanUpdates();
+                    return this.cancelledPromptResponse(sessionState);
+                }
 
-            const error = eventHandler.getFailure();
-            if (error) {
-                // noinspection ExceptionCaughtLocallyJS
-                throw error;
+                const error = eventHandler.getFailure();
+                if (!error) {
+                    break;
+                }
+                const isOverload = eventHandler.isServerOverloadedFailure();
+                if (!isOverload || !moreRetriesAvailable) {
+                    // Non-overload failure, or retries exhausted — surface it.
+                    // noinspection ExceptionCaughtLocallyJS
+                    throw error;
+                }
+
+                // Overload with retries left: back off (unless the user
+                // cancelled during the wait), reset per-attempt state, retry.
+                const retryAfter = this.extractRetryAfterSeconds(error);
+                const shouldRetry = await this.waitOverloadRetryBackoff(
+                    retryAttempt + 1,
+                    retryAfter,
+                    activePrompt.signal,
+                );
+                if (!shouldRetry) {
+                    return this.cancelledPromptResponse(sessionState);
+                }
+                eventHandler.resetForRetry();
             }
 
             await eventHandler.flushPendingPlanUpdates();
@@ -2366,6 +2420,112 @@ export class CodexAcpServer {
             return null;
         }
         return toPromptUsage(lastTokenUsage);
+    }
+
+    /**
+     * Max number of turn attempts for a single prompt when the failure is a
+     * `serverOverloaded` (upstream 503). Env override:
+     * `CODEX_ACP_OVERLOAD_RETRY_ATTEMPTS` (default 5).
+     */
+    private getOverloadRetryAttempts(): number {
+        const raw = process.env["CODEX_ACP_OVERLOAD_RETRY_ATTEMPTS"]?.trim();
+        if (raw !== undefined && raw.length > 0) {
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+                return parsed;
+            }
+        }
+        return CodexAcpServer.OVERLOAD_RETRY_ATTEMPTS;
+    }
+
+    /**
+     * Base backoff delay (ms) for the first overload retry. Env override:
+     * `CODEX_ACP_OVERLOAD_RETRY_BASE_DELAY_MS` (default 2000).
+     */
+    private getOverloadRetryBaseDelayMs(): number {
+        const raw = process.env["CODEX_ACP_OVERLOAD_RETRY_BASE_DELAY_MS"]?.trim();
+        if (raw !== undefined && raw.length > 0) {
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed) && parsed >= 0) {
+                return parsed;
+            }
+        }
+        return CodexAcpServer.OVERLOAD_RETRY_BASE_DELAY_MS;
+    }
+
+    /**
+     * Sleeps between overload retry attempts with exponential backoff,
+     * honoring a server-provided `retry_after_seconds` hint when present.
+     * Returns early when the prompt's cancellation signal fires.
+     */
+    private async waitOverloadRetryBackoff(
+        attempt: number,
+        retryAfterSeconds: number | undefined,
+        signal: AbortSignal,
+    ): Promise<boolean> {
+        let delayMs = retryAfterSeconds !== undefined && retryAfterSeconds > 0
+            ? Math.min(retryAfterSeconds * 1000, CodexAcpServer.OVERLOAD_RETRY_MAX_DELAY_MS)
+            : Math.min(
+                this.getOverloadRetryBaseDelayMs() << (attempt - 1),
+                CodexAcpServer.OVERLOAD_RETRY_MAX_DELAY_MS,
+            );
+        // Jitter (±20%) to avoid thundering-herd re-entry when several sessions
+        // hit the same saturated backend simultaneously.
+        const jitter = 0.8 + Math.random() * 0.4;
+        delayMs = Math.round(delayMs * jitter);
+
+        logger.log(
+            `Server overloaded — retrying prompt in ${delayMs}ms ` +
+            `(attempt ${attempt}/${this.getOverloadRetryAttempts()})`,
+        );
+        await new Promise<void>((resolve) => {
+            if (signal.aborted) {
+                resolve();
+                return;
+            }
+            const onAbort = () => {
+                clearTimeout(timer);
+                signal.removeEventListener("abort", onAbort);
+                resolve();
+            };
+            const timer = setTimeout(() => {
+                signal.removeEventListener("abort", onAbort);
+                clearTimeout(timer);
+                resolve();
+            }, delayMs);
+            signal.addEventListener("abort", onAbort, { once: true });
+        });
+        return !signal.aborted;
+    }
+
+    /**
+     * Extracts an optional `retry_after_seconds` hint from an overload error's
+     * `additionalDetails` (the proxy stamps it on 503/429 responses).
+     */
+    private extractRetryAfterSeconds(
+        error: RequestError | null,
+    ): number | undefined {
+        if (error === null || error.data === null || typeof error.data !== "object") {
+            return undefined;
+        }
+        const data = error.data as {
+            additionalDetails?: unknown;
+            retryAfterSeconds?: unknown;
+        };
+        if (typeof data.retryAfterSeconds === "number" && data.retryAfterSeconds > 0) {
+            return data.retryAfterSeconds;
+        }
+        const additionalDetails = data.additionalDetails;
+        if (typeof additionalDetails === "string") {
+            // The proxy may embed the hint as trailing JSON or a plain integer.
+            const match = additionalDetails.match(/retry_after_seconds["']?\s*[:=]\s*(\d+(?:\.\d+)?)/i);
+            if (match) {
+                if (match[1] === undefined) return undefined;
+                const parsed = Number.parseFloat(match[1]);
+                if (Number.isFinite(parsed) && parsed > 0) return parsed;
+            }
+        }
+        return undefined;
     }
 
     /**
