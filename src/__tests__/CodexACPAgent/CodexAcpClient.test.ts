@@ -2884,6 +2884,11 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await codexAcpAgent.initialize({protocolVersion: 1});
 
         fixture.getCodexAcpClient().authRequired = vi.fn().mockResolvedValue(false);
+        // Hermetic skill discovery: the snapshot must not depend on which
+        // skills happen to be installed in the host's ~/.codex/skills or
+        // ~/.agents/skills (e.g. a $eli-skill added later would otherwise
+        // break the fixture on machines that have it).
+        vi.spyOn(fixture.getCodexAcpClient(), "listSkills").mockResolvedValue({ data: [] });
 
         const newSessionResponse = await codexAcpAgent.newSession({cwd: "", mcpServers: []});
 
@@ -3097,6 +3102,9 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         await codexAcpAgent.initialize({protocolVersion: 1});
 
         fixture.getCodexAcpClient().authRequired = vi.fn().mockResolvedValue(false);
+        // See "handles logout command" — keep skill discovery deterministic so
+        // the /mcp snapshot is stable regardless of host-installed skills.
+        vi.spyOn(fixture.getCodexAcpClient(), "listSkills").mockResolvedValue({ data: [] });
         vi.spyOn(fixture.getCodexAcpClient(), "listMcpServers").mockResolvedValue({
             data: [
                 {
