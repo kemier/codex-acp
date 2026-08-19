@@ -77,6 +77,16 @@ export type CompletedPlan = {
 export class CodexEventHandler {
 
     private static readonly PLAN_UPDATE_INTERVAL_MS = 150;
+    /**
+     * Matches the transport-level stream disconnect error that codex core
+     * reports as `codexErrorInfo: "other"` after its internal sampling retries
+     * are exhausted — e.g. "stream disconnected before completion: error
+     * sending request for url (http://127.0.0.1:8317/v1/responses)". The
+     * local proxy (or the network) dropped the connection mid-turn; the whole
+     * turn is worth retrying once the transport is back.
+     */
+    private static readonly STREAM_DISCONNECT_ERROR_RE =
+        /stream disconnected before completion|error sending request for url|stream closed before response\.completed|websocket closed by server/i;
 
     private readonly sessionState: SessionState;
     private readonly supportsPlanUpdates: boolean;
@@ -174,6 +184,33 @@ export class CodexEventHandler {
         if (data === null || typeof data !== "object") return false;
         const info = (data as { codexErrorInfo?: unknown }).codexErrorInfo;
         return info === "serverOverloaded";
+    }
+
+    /**
+     * Returns true when the recorded failure is a transport-level stream
+     * disconnect — e.g. "stream disconnected before completion: error sending
+     * request for url" after the local proxy was restarted or the network
+     * blipped. Core retries the sampling request internally with backoff; when
+     * those retries are exhausted it reports `codexErrorInfo: "other"` with a
+     * message matching {@link STREAM_DISCONNECT_ERROR_RE}. The prompt loop
+     * treats this like a server overload and retries the whole turn.
+     */
+    isStreamDisconnectFailure(): boolean {
+        if (this.failure === null) return false;
+        const data = this.failure.data;
+        if (data === null || typeof data !== "object") return false;
+        const message = (data as { message?: unknown }).message;
+        return typeof message === "string"
+            && CodexEventHandler.STREAM_DISCONNECT_ERROR_RE.test(message);
+    }
+
+    /**
+     * True when the recorded failure is transient and the prompt loop should
+     * retry the turn with backoff (server overload OR transport-level stream
+     * disconnect).
+     */
+    isRetryableTransientFailure(): boolean {
+        return this.isServerOverloadedFailure() || this.isStreamDisconnectFailure();
     }
 
     takeCompletedPlan(): CompletedPlan | null {
@@ -823,12 +860,15 @@ export class CodexEventHandler {
                     willRetry: true,
                 },
             });
-        } else if (error === "serverOverloaded" && this.retryContext !== null) {
-            // Retryable overload (upstream 503 "model at capacity"): record the
-            // failure so prompt() can retry with backoff, but only surface a
-            // subtle notice to the client — the raw error would be replaced by
-            // the eventual successful response anyway. The server-side retry
-            // loop emits the final error text only after retries are exhausted.
+        } else if (this.isTransientRetryableError(error, params.error.message) && this.retryContext !== null) {
+            // Retryable transient failure (upstream 503 "model at capacity",
+            // or a transport-level stream disconnect — proxy restart /
+            // network blip that exhausted core's internal sampling retries):
+            // record the failure so prompt() can retry with backoff, but only
+            // surface a subtle notice to the client — the raw error would be
+            // replaced by the eventual successful response anyway. The
+            // server-side retry loop emits the final error text only after
+            // retries are exhausted.
             this.failure = RequestError.internalError(
                 this.createTurnErrorData(params.error),
             );
@@ -837,9 +877,9 @@ export class CodexEventHandler {
                 const maxAttempts = this.retryContext.maxAttempts;
                 return createAgentTextMessageChunk(
                     maxAttempts > 1
-                        ? `The model is at capacity — retrying with backoff ` +
+                        ? `${this.retryNoticePrefix(params.error)} — retrying with backoff ` +
                           `(attempt ${this.retryContext.attempt}/${maxAttempts}).\n\n`
-                        : "The model is at capacity — retrying with backoff…\n\n",
+                        : `${this.retryNoticePrefix(params.error)} — retrying with backoff…\n\n`,
                 );
             }
             return null;
@@ -864,6 +904,26 @@ export class CodexEventHandler {
             );
         }
         return createAgentTextMessageChunk(`${params.error.message}\n\n`);
+    }
+
+    /**
+     * True when the failed turn is a transient failure worth retrying with
+     * backoff: `serverOverloaded` (upstream 503) or a transport-level stream
+     * disconnect ("stream disconnected before completion ... error sending
+     * request for url"), which codex core reports as `codexErrorInfo: "other"`.
+     */
+    private isTransientRetryableError(
+        error: CodexErrorInfo | null,
+        message: string,
+    ): boolean {
+        return error === "serverOverloaded"
+            || CodexEventHandler.STREAM_DISCONNECT_ERROR_RE.test(message);
+    }
+
+    private retryNoticePrefix(error: ErrorNotification["error"]): string {
+        return error.codexErrorInfo === "serverOverloaded"
+            ? "The model is at capacity"
+            : "The connection dropped mid-stream";
     }
 
     private isAuthenticationRequiredError(error: CodexErrorInfo | null): boolean {

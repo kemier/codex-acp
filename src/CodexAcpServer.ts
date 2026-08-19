@@ -2162,16 +2162,21 @@ export class CodexAcpServer {
                 sessionState.currentModelSupportsFast,
             );
             ensurePendingTurnStart();
-            // ── Retry-on-overload loop ─────────────────────────────────────
-            // A `serverOverloaded` failure (upstream 503 "model at capacity")
-            // is transient: the turn is retried with exponential backoff on
-            // the SAME model instead of surfacing the error immediately (or
+            // ── Retry-on-transient-failure loop ───────────────────────────
+            // A transient failure — `serverOverloaded` (upstream 503 "model at
+            // capacity") or a transport-level stream disconnect ("stream
+            // disconnected before completion: error sending request for url"
+            // after the proxy restarted / network blipped, reported as
+            // `codexErrorInfo: "other"`) — is retried with exponential backoff
+            // on the SAME model instead of surfacing the error immediately (or
             // swapping to a fallback, which would re-enqueue an identical
             // large payload into the still-saturated queue). The retried turn
             // reuses the same event handler/subscription; per-attempt state is
             // cleared via resetForRetry(). The client sees a one-line
             // "retrying" notice (set for the first attempt only) rather than
-            // the raw error.
+            // the raw error. This mirrors ericli's hold-the-model behavior and
+            // prevents the "end_turn with no reply" the user saw when the
+            // proxy dropped the socket mid-turn.
             const overloadRetryAttempts = this.getOverloadRetryAttempts();
             let turnCompleted: TurnCompletedNotification | null = null;
             for (let retryAttempt = 0; ; retryAttempt++) {
@@ -2232,14 +2237,15 @@ export class CodexAcpServer {
                 if (!error) {
                     break;
                 }
-                const isOverload = eventHandler.isServerOverloadedFailure();
-                if (!isOverload || !moreRetriesAvailable) {
-                    // Non-overload failure, or retries exhausted — surface it.
+                const isTransient = eventHandler.isRetryableTransientFailure();
+                if (!isTransient || !moreRetriesAvailable) {
+                    // Non-transient failure, or retries exhausted — surface it.
                     // noinspection ExceptionCaughtLocallyJS
                     throw error;
                 }
 
-                // Overload with retries left: back off (unless the user
+                // Transient failure (overload / stream disconnect) with retries
+                // left: back off (unless the user
                 // cancelled during the wait), reset per-attempt state, retry.
                 const retryAfter = this.extractRetryAfterSeconds(error);
                 const shouldRetry = await this.waitOverloadRetryBackoff(
@@ -2503,7 +2509,7 @@ export class CodexAcpServer {
         delayMs = Math.round(delayMs * jitter);
 
         logger.log(
-            `Server overloaded — retrying prompt in ${delayMs}ms ` +
+            `Transient failure — retrying prompt in ${delayMs}ms ` +
             `(attempt ${attempt}/${this.getOverloadRetryAttempts()})`,
         );
         await new Promise<void>((resolve) => {
