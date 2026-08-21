@@ -95,7 +95,7 @@ export async function createCommandExecutionUpdate(item: CommandExecutionItem): 
     if (commandAction) {
         return createCommandActionEvent(item.id, item.status, item.cwd, commandAction);
     }
-    const command = stripShellPrefix(item.command);
+    const command = stripShellPrefix(item.command, item.cwd);
     return createTerminalCommandEvent({
         sessionUpdate: "tool_call",
         toolCallId: item.id,
@@ -593,7 +593,7 @@ export function createCommandActionEvent(
                 toolCallId: id,
                 status: acpStatus,
                 kind: "execute",
-                title: stripShellPrefix(commandAction.command),
+                title: stripShellPrefix(commandAction.command, cwd),
                 rawInput: {
                     command: commandAction.command,
                     cwd,

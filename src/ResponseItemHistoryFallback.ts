@@ -480,7 +480,8 @@ function rawInputForFunctionCall(name: string, args: unknown): unknown {
 function titleForFunctionCall(name: string, args: unknown): string {
     if (name === "exec_command") {
         const command = commandFromFunctionArguments(args);
-        return command ? stripShellPrefix(command) : "Run command";
+        const cwd = cwdFromFunctionArguments(args);
+        return command ? stripShellPrefix(command, cwd) : "Run command";
     }
 
     if (name === "apply_patch") {
