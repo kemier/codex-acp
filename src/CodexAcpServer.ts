@@ -1531,7 +1531,11 @@ export class CodexAcpServer {
 
     private normalizeSessionTitle(title: string | null | undefined): string | null {
         const normalized = title?.replace(/\s+/g, " ").trim() ?? "";
-        return normalized.length > 0 ? normalized : null;
+        if (normalized.length === 0) return null;
+        // Cap the title length so a long first prompt (e.g. a forked conversation
+        // summary) doesn't become the entire session title. Matches ericli's
+        // SessionStore.generateTitle behavior of bounding the title.
+        return normalized.length > 80 ? normalized.slice(0, 77) + "..." : normalized;
     }
 
     private async createHistoryUpdates(item: ThreadItem, sessionState: SessionState): Promise<UpdateSessionEvent[]> {

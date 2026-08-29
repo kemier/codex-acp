@@ -1,0 +1,12 @@
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "test-session-id",
+      "update": {
+        "sessionUpdate": "session_info_update",
+        "title": "The following is a summary of a conversation from another agent. Please conti..."
+      }
+    }
+  ]
+}

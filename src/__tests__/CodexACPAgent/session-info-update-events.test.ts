@@ -24,6 +24,24 @@ describe("CodexEventHandler - session info updates", () => {
         );
     });
 
+    it("truncates a long first prompt (e.g. a forked summary) for the fallback title", async () => {
+        const { mockFixture } = setupPromptTestSession({
+            sessionId,
+            sessionTitleSource: "unset",
+        });
+
+        const longSummary = "The following is a summary of a conversation from another agent. Please continue this conversation: --- Context (memory & skills) from the source agent: --- This is a very long forked conversation summary that would otherwise become the entire session title because it exceeds the 80 character cap and needs to be truncated to a reasonable length. --- Please continue from where the conversation left off.";
+
+        await mockFixture.getCodexAcpAgent().prompt({
+            sessionId,
+            prompt: [{ type: "text", text: longSummary }],
+        });
+
+        await expect(`${mockFixture.getAcpConnectionDump([])}\n`).toMatchFileSnapshot(
+            "data/session-info-update-truncated-title.json"
+        );
+    });
+
     it("does not replace an explicit session title with the prompt fallback", async () => {
         const { mockFixture } = setupPromptTestSession({
             sessionId,
