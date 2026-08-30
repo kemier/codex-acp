@@ -368,7 +368,7 @@ function createFunctionCallUpdate(item: JsonRecord): LegacyFunctionCallUpdate | 
         return null;
     }
 
-    const isExecCommand = name === "exec_command";
+    const isExecCommand = isExecCommandName(name);
     const args = parseFunctionArguments(item["arguments"]);
     const command = isExecCommand ? commandFromFunctionArguments(args) : null;
     const cwd = isExecCommand ? cwdFromFunctionArguments(args) : "";
@@ -460,7 +460,7 @@ function parseFunctionArguments(value: unknown): unknown {
 }
 
 function rawInputForFunctionCall(name: string, args: unknown): unknown {
-    if (name === "exec_command") {
+    if (isExecCommandName(name)) {
         const record = asRecord(args);
         if (record) {
             return {
@@ -478,7 +478,7 @@ function rawInputForFunctionCall(name: string, args: unknown): unknown {
 }
 
 function titleForFunctionCall(name: string, args: unknown): string {
-    if (name === "exec_command") {
+    if (isExecCommandName(name)) {
         const command = commandFromFunctionArguments(args);
         const cwd = cwdFromFunctionArguments(args);
         return command ? stripShellPrefix(command, cwd) : "Run command";
@@ -502,6 +502,7 @@ function titleForFunctionCall(name: string, args: unknown): string {
 function toolKindForFunctionCall(name: string): AcpToolKind {
     switch (name) {
         case "exec_command":
+        case "shell_command":
         case "multi_tool_use.parallel":
             return "execute";
         case "apply_patch":
@@ -514,7 +515,11 @@ function toolKindForFunctionCall(name: string): AcpToolKind {
 }
 
 function functionCallUsesTerminal(item: JsonRecord): boolean {
-    return item["name"] === "exec_command";
+    return isExecCommandName(stringValue(item["name"]) ?? "");
+}
+
+function isExecCommandName(name: string): boolean {
+    return name === "exec_command" || name === "shell_command";
 }
 
 function commandFromFunctionArguments(args: unknown): string | null {

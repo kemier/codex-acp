@@ -96,18 +96,47 @@ describe("ResponseItemHistoryFallback", () => {
             { toolCallId: "call-read-ok", status: "completed" },
         ]);
     });
+
+    it("recovers legacy shell_command function calls as execute tool calls with the command title", () => {
+        const updates = parseResponseItemHistoryFallback(jsonl([
+            functionCall("call-legacy", "npm run build", "shell_command"),
+            functionCallOutput("call-legacy", "Chunk ID: legacy\nProcess exited with code 0\nOutput:\nbuilt\n"),
+        ]), "terminal_output");
+
+        const toolCalls = (updates ?? []).filter((
+            update,
+        ): update is Extract<UpdateSessionEvent, { sessionUpdate: "tool_call" }> => (
+            update.sessionUpdate === "tool_call"
+        ));
+        expect(toolCalls).toHaveLength(1);
+        const toolCall = toolCalls[0]!;
+        expect(toolCall).toMatchObject({
+            toolCallId: "call-legacy",
+            title: "npm run build",
+            kind: "execute",
+            status: "in_progress",
+            content: [{ type: "terminal", terminalId: "call-legacy" }],
+        });
+        expect(toolCall.rawInput).toMatchObject({
+            command: "npm run build",
+            cwd: "/workspace",
+        });
+        expect(toolCallUpdateStatuses(updates)).toEqual([
+            { toolCallId: "call-legacy", status: "completed" },
+        ]);
+    });
 });
 
 function jsonl(records: unknown[]): string {
     return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
 }
 
-function functionCall(callId: string, cmd: string): unknown {
+function functionCall(callId: string, cmd: string, name = "exec_command"): unknown {
     return {
         type: "response_item",
         payload: {
             type: "function_call",
-            name: "exec_command",
+            name,
             arguments: JSON.stringify({
                 cmd,
                 workdir: "/workspace",
