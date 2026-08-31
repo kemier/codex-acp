@@ -1447,13 +1447,25 @@ export class CodexAcpServer {
         const threadUpdates: UpdateSessionEvent[] = [];
         let sawCompaction = false;
         for (const turn of thread.turns) {
+            // Where this turn's updates start, so a compaction marker found
+            // INSIDE the turn can still keep the turn's own user prompt.
+            const turnStart = threadUpdates.length;
             for (const item of turn.items) {
                 // When we encounter a context compaction marker, all items before it
                 // (pre-compaction history) have been summarized and replaced. Discard
                 // all previously accumulated updates so the session/load replay only
                 // shows the compaction summary and post-compaction turns.
                 if (item.type === "contextCompaction") {
+                    // …but keep THIS turn's user message(s). The marker lands inside
+                    // the turn that triggered compaction, and everything after it is
+                    // the answer to that same prompt. Clearing wholesale dropped the
+                    // prompt and left the replay starting with a headless turn — a
+                    // collapsed response block with no user message in front of it.
+                    const ownPrompt = threadUpdates
+                        .slice(turnStart)
+                        .filter((u) => u.sessionUpdate === "user_message_chunk");
                     threadUpdates.length = 0;
+                    threadUpdates.push(...ownPrompt);
                     // The raw-rollout fallback parser also contains pre-compaction items;
                     // nullify it so mergeHistoryUpdates does not reintroduce them.
                     responseItemFallbackUpdates = null;

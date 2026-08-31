@@ -131,6 +131,38 @@
     {
       "sessionId": "session-1",
       "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
+          "type": "text",
+          "text": "Hi"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
+        "sessionUpdate": "user_message_chunk",
+        "messageId": "item-user-1",
+        "content": {
+          "type": "text",
+          "text": "[@image](https://example.com/image.png)"
+        }
+      }
+    }
+  ]
+}
+{
+  "method": "sessionUpdate",
+  "args": [
+    {
+      "sessionId": "session-1",
+      "update": {
         "sessionUpdate": "tool_call",
         "toolCallId": "item-context-compaction-1",
         "kind": "other",
