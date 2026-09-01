@@ -32,10 +32,12 @@ export function stripShellPrefix(command: string, cwd?: string): string {
     // first line. Codex emits the `&&` form; other agents use `;`.
     const cdAnd = firstLine.match(/^cd\s+(\S[^;&]*?)\s*(&&|;)\s*(.+)$/);
     if (cdAnd && cdAnd[3]) {
+        const target = (cdAnd[1] ?? "").trim();
+        const separator = cdAnd[2] === ";" ? ";" : " &&";
         const inline = cdAnd[3].trim();
-        const sub = subdirOfCwd(cdAnd[1].trim(), cwd);
+        const sub = subdirOfCwd(target, cwd);
         if (sub) {
-            const joined = `cd ${sub}${cdAnd[2] === ";" ? ";" : " &&"} ${inline}`;
+            const joined = `cd ${sub}${separator} ${inline}`;
             return rest ? `${joined}\n${rest}` : joined;
         }
         return rest ? `${inline}\n${rest}` : inline;
