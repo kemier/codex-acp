@@ -4,7 +4,7 @@
     {
       "sessionId": "test-session-id",
       "toolCall": {
-        "toolCallId": "elicitation-my-mcp-server",
+        "toolCallId": "elicitation-my-mcp-server-4",
         "kind": "other",
         "status": "pending",
         "content": [

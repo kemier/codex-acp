@@ -268,6 +268,9 @@ function buildToolApprovalOptions(persistOptions: Set<PersistValue>): acp.Permis
     return options;
 }
 
+/** Fallback sequence for elicitations that carry no id of their own. */
+let elicitationSeq = 0;
+
 export class CodexElicitationHandler implements ElicitationHandler {
     private readonly connection: AcpClientConnection;
     private readonly sessionState: SessionState;
@@ -604,7 +607,13 @@ export class CodexElicitationHandler implements ElicitationHandler {
                 request: {
                     sessionId,
                     toolCall: {
-                        toolCallId: `elicitation-${params.serverName}`,
+                        // Unique per request: `elicitation-<serverName>` alone
+                        // repeats for the same MCP server in a later turn, and
+                        // clients resolve tool rows by id — the second request
+                        // would update the first request's row. Nothing
+                        // reconstructs this string; correlation goes through
+                        // correlatedCallId, so a counter suffix is safe.
+                        toolCallId: `elicitation-${params.serverName}-${++elicitationSeq}`,
                         kind: context.isToolApproval ? "execute" : "other",
                         status: "pending",
                         content: [messageContent],

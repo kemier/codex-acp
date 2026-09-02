@@ -516,7 +516,11 @@ describe('Elicitation Events', () => {
 
             const [requestPermissionEvent] = fixture.getAcpConnectionEvents(['_meta']);
             expect(requestPermissionEvent?.method).toBe('requestPermission');
-            expect(requestPermissionEvent?.args[0].toolCall.toolCallId).toBe('elicitation-tool-server');
+            // The id now carries a unique suffix: 'elicitation-<server>' alone repeated
+            // across turns and clients resolve tool rows by id.
+            expect(requestPermissionEvent?.args[0].toolCall.toolCallId).toMatch(
+                /^elicitation-tool-server-\d+$/,
+            );
 
             completeTurn();
             await promptPromise;
@@ -573,7 +577,11 @@ describe('Elicitation Events', () => {
 
             const [requestPermissionEvent] = fixture.getAcpConnectionEvents(['_meta']);
             expect(requestPermissionEvent?.method).toBe('requestPermission');
-            expect(requestPermissionEvent?.args[0].toolCall.toolCallId).toBe('elicitation-tool-server');
+            // The id now carries a unique suffix: 'elicitation-<server>' alone repeated
+            // across turns and clients resolve tool rows by id.
+            expect(requestPermissionEvent?.args[0].toolCall.toolCallId).toMatch(
+                /^elicitation-tool-server-\d+$/,
+            );
 
             completeTurn();
             await promptPromise;
