@@ -100,7 +100,7 @@ const IMPLEMENT_PLAN_OPTION_ID = "implement_plan";
 const REVISE_PLAN_OPTION_ID = "revise_plan";
 
 /** Why an in-flight turn was interrupted; surfaced in log lines. */
-type InterruptRequestName = "Cancel" | "Close" | "Plan mode switch";
+type InterruptRequestName = "Cancel" | "Close" | "Plan mode switch" | "New prompt";
 
 export interface SessionState {
     sessionId: string,
@@ -2023,6 +2023,19 @@ export class CodexAcpServer {
                     _meta: this.buildQuotaMeta(sessionState),
                 };
             }
+        }
+        // One turn per session. A client can legitimately send another prompt while
+        // a turn is still running — vscode-acp force-ends a turn locally when its
+        // cancel goes unacknowledged for 5s, then drains its queue — and the reset
+        // below would orphan the previous turn: currentTurnId is what cancel() and
+        // steer() resolve against, so the old turn would keep streaming with no way
+        // to stop or steer it. Interrupt it first; the newest prompt wins, which is
+        // what the user asked for by sending it.
+        //
+        // Same defect was found in ericli, where the second prompt overwrote the
+        // abort controller and two tool loops then interleaved into one history.
+        if (sessionState.currentTurnId) {
+            await this.interruptSessionTurn(sessionState, "New prompt", true);
         }
         sessionState.currentTurnId = null;
         // Snapshot the prior turn's usage before resetting, so the proactive
