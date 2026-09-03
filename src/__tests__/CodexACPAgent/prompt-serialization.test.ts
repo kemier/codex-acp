@@ -43,3 +43,43 @@ describe("prompt serialization", () => {
         expect(source).toContain('this.interruptSessionTurn(sessionState, "New prompt", true)');
     });
 });
+
+describe("steer echo", () => {
+    const source = fs.readFileSync(
+        path.resolve(__dirname, "../../CodexAcpServer.ts"),
+        "utf8",
+    );
+
+    /**
+     * session/steer is a notification, so a client cannot tell acceptance from
+     * silent refusal — steer() returns early when there is no currentTurnId and
+     * nothing reaches the client. vscode-acp keeps a steered message queued until
+     * the agent confirms receipt, so without an echo it could not steer this agent
+     * automatically: the message would be lost or re-sent at turn end. ericli and
+     * claude-code already echo, which is why they got the automatic path first.
+     */
+    it("echoes the accepted text so the client can confirm delivery", () => {
+        const idx = source.indexOf("Steer succeeded");
+        expect(idx).toBeGreaterThan(0);
+        const after = source.slice(idx, idx + 1200);
+        expect(after).toContain("createUserMessageChunk({type: \"text\", text: params.text})");
+        expect(after).toContain("new ACPSessionConnection(this.connection, params.sessionId)");
+    });
+
+    it("echoes only after turnSteer resolved, never on the failure path", () => {
+        const steerAt = source.indexOf("async steer(");
+        const body = source.slice(steerAt, steerAt + 2200);
+        const turnSteer = body.indexOf("await this.codexAcpClient.turnSteer(");
+        const echo = body.indexOf("createUserMessageChunk");
+        const failure = body.indexOf('logger.error("Steer failed"');
+        expect(turnSteer).toBeGreaterThan(0);
+        expect(echo).toBeGreaterThan(turnSteer);
+        expect(echo).toBeLessThan(failure);
+    });
+
+    it("a failing echo cannot break the steer", () => {
+        const steerAt = source.indexOf("async steer(");
+        const body = source.slice(steerAt, steerAt + 2200);
+        expect(body).toContain('logger.error("Steer echo failed", echoErr)');
+    });
+});

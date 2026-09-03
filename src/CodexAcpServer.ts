@@ -2740,6 +2740,24 @@ export class CodexAcpServer {
                 text: params.text,
             });
            logger.log("Steer succeeded", {sessionId: params.sessionId, textLen: params.text.length});
+           // Echo the accepted text back as a user_message_chunk.
+           //
+           // session/steer is a NOTIFICATION, so a client cannot tell acceptance
+           // from silent refusal — this method returns early when there is no
+           // currentTurnId, and nothing reached the client. vscode-acp therefore
+           // could not steer automatically: it keeps the message queued until the
+           // agent confirms receipt, and without a confirmation the message would
+           // either be lost or re-sent at turn end. ericli and claude-code already
+           // echo, which is why they got the automatic path first.
+           //
+           // Emitted only after turnSteer resolves, so the echo means the turn
+           // really took it.
+           try {
+               const session = new ACPSessionConnection(this.connection, params.sessionId);
+               await session.update(createUserMessageChunk({type: "text", text: params.text}));
+           } catch (echoErr) {
+               logger.error("Steer echo failed", echoErr);
+           }
        } catch (err) {
            logger.error("Steer failed", err);
        }
