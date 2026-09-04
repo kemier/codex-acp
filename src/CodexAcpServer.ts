@@ -41,6 +41,12 @@ import {CodexCommands} from "./CodexCommands";
 import {SteeringQueue} from "./SteeringQueue";
 import type {QuotaMeta} from "./QuotaMeta";
 import {logger} from "./Logger";
+import {
+    getSlotInfo,
+    isSlotCacheEnabled,
+    restoreSlotCache,
+    saveSlotCache,
+} from "./SlotCache";
 import {sanitizeMcpServerName} from "./McpServerName";
 import {ModelContextWindowResolver} from "./ModelContextWindowResolver";
 import {createResponseItemHistoryFallbackUpdates} from "./ResponseItemHistoryFallback";
@@ -580,6 +586,8 @@ export class CodexAcpServer {
             thread,
         } = await this.getOrCreateSessionWithHistory(params);
 
+        await this.tryRestoreSlot(sessionId);
+
         await this.streamThreadHistory(sessionId, thread);
 
         logger.log("Session loaded", {
@@ -598,6 +606,8 @@ export class CodexAcpServer {
         logger.log("Resuming session...", {sessionId: params.sessionId});
         const [sessionId, modelState, modeState] = await this.getOrCreateSession(params);
 
+        await this.tryRestoreSlot(sessionId);
+
         logger.log("Session resumed", {
             sessionId: sessionId,
             modelId: modelState.currentModelId,
@@ -608,6 +618,52 @@ export class CodexAcpServer {
             modes: modeState,
             ...this.createSessionConfigOptionsResponse(this.getSessionState(sessionId)),
         };
+    }
+
+    /** Save the llama-server slot KV cache for a session (fire-and-forget). */
+    private saveSessionSlot(sessionId: string): void {
+        if (!isSlotCacheEnabled()) {
+            return;
+        }
+        void (async () => {
+            try {
+                const result = await saveSlotCache(0, `${sessionId}.bin`);
+                if (result.success) {
+                    logger.log(`[slot-cache] saved session=${sessionId} tokens=${result.nTokens} file=${result.fileBytes}B (${result.elapsedMs}ms)`);
+                } else {
+                    logger.log(`[slot-cache] save failed session=${sessionId}: ${result.error}`);
+                }
+            } catch (e) {
+                logger.error(`[slot-cache] save error session=${sessionId}`, e);
+            }
+        })();
+    }
+
+    /** Attempt to restore the llama-server slot KV cache for a session (best-effort). */
+    private async tryRestoreSlot(sessionId: string): Promise<void> {
+        if (!isSlotCacheEnabled()) {
+            return;
+        }
+        try {
+            // Only restore if the slot is empty (no prompt has been sent yet).
+            // If the slot already has tokens, the restore will fail with 400.
+            const slotInfo = await getSlotInfo(0);
+            if (slotInfo && slotInfo.nPromptTokens > 1000) {
+                logger.log(`[slot-cache] restore skipped session=${sessionId}: slot has ${slotInfo.nPromptTokens} tokens (not empty)`);
+                return;
+            }
+
+            const result = await restoreSlotCache(0, `${sessionId}.bin`);
+            if (result.success) {
+                logger.log(`[slot-cache] restored session=${sessionId} tokens=${result.nTokens} file=${result.fileBytes}B (${result.elapsedMs}ms)`);
+            } else {
+                // Restore failed — file may not exist (first session) or is stale.
+                // This is expected; the normal prefill path will handle it.
+                logger.log(`[slot-cache] restore skipped session=${sessionId}: ${result.error}`);
+            }
+        } catch (e) {
+            logger.error(`[slot-cache] restore error session=${sessionId}`, e);
+        }
     }
 
     async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
@@ -647,6 +703,8 @@ export class CodexAcpServer {
                 activePrompt.requestClose();
                 await activePrompt.completion;
             }
+
+            this.saveSessionSlot(params.sessionId);
 
             await this.runWithProcessCheck(() => this.codexAcpClient.closeSession(params.sessionId));
             logger.log("Session closed", {sessionId: params.sessionId});
@@ -2135,6 +2193,7 @@ export class CodexAcpServer {
                     // noinspection ExceptionCaughtLocallyJS
                     throw error;
                 }
+                this.saveSessionSlot(params.sessionId);
                 return {
                     stopReason: "end_turn",
                     usage: this.buildPromptUsage(sessionState.lastTokenUsage),
@@ -2370,6 +2429,7 @@ export class CodexAcpServer {
                 this.createPromptFallbackTitle(params.prompt),
             );
 
+            this.saveSessionSlot(params.sessionId);
             return {
                 stopReason: "end_turn",
                 usage: this.buildPromptUsage(sessionState.lastTokenUsage),
