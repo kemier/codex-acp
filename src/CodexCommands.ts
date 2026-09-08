@@ -106,7 +106,7 @@ export class CodexCommands {
      * See the original cli commands documentation here: https://developers.openai.com/codex/cli/slash-commands/
      */
     private getBuiltinCommands(): AvailableCommand[] {
-        return [
+        return CodexCommands.withTurnSafety([
             {
                 name: "plan",
                 description: "Turn plan mode on.",
@@ -177,7 +177,7 @@ export class CodexCommands {
               description: "List background terminal processes.",
               input: null
          },
-      ];
+      ]);
   }
 
     private parseCommand(prompt: acp.ContentBlock[]): ParsedSlashCommand | null {
@@ -216,7 +216,46 @@ export class CodexCommands {
         const command = this.parseCommand(prompt);
         if (command === null) return false;
         if (command.name.startsWith("$")) return false;
-        return command.name === "ps" || command.name === "status";
+        return CodexCommands.isReadOnlyCommandName(command.name);
+    }
+
+    /**
+     * Whether a command NAME is one that {@link tryHandleReadOnlyCommand}
+     * services without starting or interrupting a turn.
+     *
+     * Split out from {@link isReadOnlyCommand} so the `_meta.turnSafe` we
+     * advertise is derived from the same predicate the dispatch uses, and the two
+     * cannot disagree. A client that trusts the declaration and sends such a
+     * command mid-turn must not have its turn interrupted.
+     */
+    private static isReadOnlyCommandName(name: string): boolean {
+        return name === "ps" || name === "status";
+    }
+
+    /**
+     * Attach `_meta.turnSafe` to the commands that are safe to invoke while a
+     * turn is streaming.
+     *
+     * ACP reserves `AvailableCommand._meta` for this kind of metadata. Without
+     * it, a client wanting to offer mid-turn read-only commands has to guess from
+     * the command NAME — which is not portable: `/goal resume` merely flips a
+     * flag on ericli but calls `resumeGoal()` and starts a turn here, and
+     * `/skills`/`/mcp` are read-only listings here yet are NOT in
+     * isReadOnlyCommandName, so sending one mid-turn reaches
+     * interruptSessionTurn() and destroys the streaming answer.
+     *
+     * Only what tryHandleReadOnlyCommand actually services is declared, so the
+     * promise is one this server keeps. `/skills`, `/mcp` and the `/goal`
+     * pause|clear forms are read-only in substance and could join once they are
+     * routed through the read-only path too.
+     */
+    private static withTurnSafety(commands: acp.AvailableCommand[]): acp.AvailableCommand[] {
+        for (const command of commands) {
+            if (CodexCommands.isReadOnlyCommandName(command.name)) {
+                command._meta = { ...(command._meta ?? {}), turnSafe: true };
+            }
+        }
+        return commands;
     }
 
     /**

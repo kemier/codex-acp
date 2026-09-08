@@ -33,7 +33,10 @@
           {
             "name": "status",
             "description": "Display session configuration and token usage.",
-            "input": null
+            "input": null,
+            "_meta": {
+              "turnSafe": true
+            }
           },
           {
             "name": "review",
@@ -82,7 +85,10 @@
           {
             "name": "ps",
             "description": "List background terminal processes.",
-            "input": null
+            "input": null,
+            "_meta": {
+              "turnSafe": true
+            }
           },
           {
             "name": "$build",
