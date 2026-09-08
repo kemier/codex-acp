@@ -7,7 +7,7 @@ import type {SessionState} from "./CodexAcpServer";
 import type {RateLimitsMap} from "./RateLimitsMap";
 import type {TokenCount} from "./TokenCount";
 import {logger} from "./Logger";
-import {createAgentTextMessageChunk} from "./ContentChunks";
+import {createCommandOutputChunk} from "./ContentChunks";
 import {
     COLLABORATION_MODE_CONFIG_ID,
     DEFAULT_COLLABORATION_MODE,
@@ -277,13 +277,13 @@ export class CodexCommands {
            case "ps": {
                const psSession = new ACPSessionConnection(this.connection, sessionId);
                const psMessage = this.buildPsMessage(sessionState);
-               await psSession.update(createAgentTextMessageChunk(psMessage));
+               await psSession.update(createCommandOutputChunk(psMessage));
                return { handled: true };
           }
           case "status": {
               const session = new ACPSessionConnection(this.connection, sessionId);
               const message = this.buildStatusMessage(sessionState);
-              await session.update(createAgentTextMessageChunk(message));
+              await session.update(createCommandOutputChunk(message));
               return { handled: true };
           }
            default:
@@ -352,20 +352,20 @@ export class CodexCommands {
             case "status": {
                 const session = new ACPSessionConnection(this.connection, sessionId);
                 const message = this.buildStatusMessage(sessionState);
-                await session.update(createAgentTextMessageChunk(message));
+                await session.update(createCommandOutputChunk(message));
                 return { handled: true };
             }
             case "ps": {
                 const psSession = new ACPSessionConnection(this.connection, sessionId);
                 const psMessage = this.buildPsMessage(sessionState);
-                await psSession.update(createAgentTextMessageChunk(psMessage));
+                await psSession.update(createCommandOutputChunk(psMessage));
                 return { handled: true };
             }
             case "logout": {
                 await this.runWithProcessCheck(() => this.codexAcpClient.logout());
                 await this.onLogout();
                 const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update(createAgentTextMessageChunk("Logged out from Codex account."));
+                await session.update(createCommandOutputChunk("Logged out from Codex account."));
                 return { handled: true };
             }
             case "skills": {
@@ -379,7 +379,7 @@ export class CodexCommands {
                     ? ["Available skills:", ...lines].join("\n")
                     : "No skills configured.";
                 const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update(createAgentTextMessageChunk(text));
+                await session.update(createCommandOutputChunk(text));
                 return { handled: true };
             }
             case "mcp": {
@@ -397,7 +397,7 @@ export class CodexCommands {
                     ? ["Configured MCP servers:", ...lines].join("\n")
                     : "No MCP servers configured.";
                 const session = new ACPSessionConnection(this.connection, sessionId);
-                await session.update(createAgentTextMessageChunk(text));
+                await session.update(createCommandOutputChunk(text));
                 return { handled: true };
             }
             default:
@@ -452,7 +452,7 @@ export class CodexCommands {
 
         if (argument.length > 4000) {
             const session = new ACPSessionConnection(this.connection, sessionId);
-            await session.update(createAgentTextMessageChunk('Command "/goal" requires goal text of at most 4000 characters.'));
+            await session.update(createCommandOutputChunk('Command "/goal" requires goal text of at most 4000 characters.'));
             return { handled: true };
         }
 
@@ -501,7 +501,7 @@ export class CodexCommands {
 
     private async sendCommandUsageMessage(name: string, inputHint: string, sessionId: string): Promise<void> {
         const session = new ACPSessionConnection(this.connection, sessionId);
-        await session.update(createAgentTextMessageChunk(`Command "/${name}" requires ${inputHint}.`));
+        await session.update(createCommandOutputChunk(`Command "/${name}" requires ${inputHint}.`));
     }
 
 

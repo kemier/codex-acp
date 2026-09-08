@@ -8,6 +8,9 @@
         "content": {
           "type": "text",
           "text": "Available skills:\n- build: Build\n- deploy: Deploy the service"
+        },
+        "_meta": {
+          "commandOutput": true
         }
       }
     }

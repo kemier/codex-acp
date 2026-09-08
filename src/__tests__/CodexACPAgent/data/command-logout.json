@@ -8,6 +8,9 @@
         "content": {
           "type": "text",
           "text": "Logged out from Codex account."
+        },
+        "_meta": {
+          "commandOutput": true
         }
       }
     }

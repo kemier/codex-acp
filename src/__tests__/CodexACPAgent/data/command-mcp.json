@@ -8,6 +8,9 @@
         "content": {
           "type": "text",
           "text": "Configured MCP servers:\n- fs: 1 tools, 1 resources, auth=bearerToken\n- browser: 0 tools, 0 resources, auth=notLoggedIn"
+        },
+        "_meta": {
+          "commandOutput": true
         }
       }
     }
