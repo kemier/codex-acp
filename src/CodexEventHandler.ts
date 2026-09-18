@@ -859,7 +859,7 @@ export class CodexEventHandler {
             // therefore collides with plan-mode, which IS a plan and arrives
             // separately as sessionUpdate "plan_update" (see createPlanUpdateEvent).
             //
-            // Adapter-neutral hint, same one ericli and claude-code-acp send. A
+            // Adapter-neutral hint, shared with the other adapters. A
             // client that ignores _meta renders exactly as before.
             _meta: { acp: { plan: { kind: "todo", title: "Todos" } } },
         } as UpdateSessionEvent;
