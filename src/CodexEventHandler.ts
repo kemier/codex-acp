@@ -847,7 +847,22 @@ export class CodexEventHandler {
         return {
             sessionUpdate: "plan",
             entries: plan,
-        }
+            // update_plan is a checklist, not a strategy — the app-server says so
+            // where it builds this notification:
+            //
+            //   // `update_plan` is a todo/checklist tool; it is not related to
+            //   // plan-mode updates
+            //   (codex-rs/app-server/src/bespoke_event_handling.rs)
+            //
+            // The tool NAME is legacy; the exec layer models the same data as
+            // TodoList/TodoItem { completed }. A client titling this bar "Plan"
+            // therefore collides with plan-mode, which IS a plan and arrives
+            // separately as sessionUpdate "plan_update" (see createPlanUpdateEvent).
+            //
+            // Adapter-neutral hint, same one ericli and claude-code-acp send. A
+            // client that ignores _meta renders exactly as before.
+            _meta: { acp: { plan: { kind: "todo", title: "Todos" } } },
+        } as UpdateSessionEvent;
     }
 
     private async createErrorEvent(params: ErrorNotification): Promise<UpdateSessionEvent | null> {

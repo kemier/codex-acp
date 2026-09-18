@@ -16,7 +16,15 @@
             "content": "Verify it in Zed",
             "priority": "medium"
           }
-        ]
+        ],
+        "_meta": {
+          "acp": {
+            "plan": {
+              "kind": "todo",
+              "title": "Todos"
+            }
+          }
+        }
       }
     }
   ]
