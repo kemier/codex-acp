@@ -78,6 +78,20 @@ export class CodexEventHandler {
 
     private static readonly PLAN_UPDATE_INTERVAL_MS = 150;
     /**
+     * Threshold (chars of delivered assistant message text) below which a
+     * turn that also ran at least one tool is considered "short-output". Used
+     * by {@link maybeEmitShortOutputNotice} to detect the GLM-on-proxy failure
+     * mode where the model runs real tool calls (commits, deploys) but ends
+     * the turn with almost no acknowledgement text, so from the UI it looks
+     * like codex gave up and the user has to type "go on".
+     *
+     * 40 chars is deliberately low: a legitimate terse answer ("Done.", "Committed.")
+     * is still under it, so we only fire when the model said essentially
+     * nothing AND it did real work — the precise shape of the observed
+     * premature-end_turn (0-266 output tokens, 0 agent_message_chunk).
+     */
+    private static readonly SHORT_OUTPUT_TEXT_THRESHOLD = 40;
+    /**
      * Matches the transport-level stream disconnect error that codex core
      * reports as `codexErrorInfo: "other"` after its internal sampling retries
      * are exhausted — e.g. "stream disconnected before completion: error
@@ -118,6 +132,13 @@ export class CodexEventHandler {
      */
     private retryContext: { attempt: number; maxAttempts: number } | null = null;
     private retryNoticeEmitted = false;
+    /**
+     * Per-turn counters for short-output detection. Accumulated as the turn
+     * streams and read at `turn/completed`; cleared by `resetForRetry` and on
+     * the next `turn/started`.
+     */
+    private turnDeliveredTextChars = 0;
+    private turnToolCallCount = 0;
 
     constructor(
         connection: AcpClientConnection,
@@ -155,11 +176,68 @@ export class CodexEventHandler {
         this.activeImageGenerationItems.clear();
         this.emittedImageViewItems.clear();
         this.activeSubAgentActivities.clear();
+        this.turnDeliveredTextChars = 0;
+        this.turnToolCallCount = 0;
         this.retryContext = null;
         // NOTE: retryNoticeEmitted intentionally survives resetForRetry() —
         // it is per-prompt (the handler is recreated for each prompt), and we
         // want the one-line "retrying" notice to appear only once across all
         // retry attempts of the same prompt, not once per attempt.
+    }
+
+    /**
+     * Surfaces a visible notice when the model ended a turn that ran real tool
+     * calls but delivered almost no assistant text.
+     *
+     * Background: GLM-5.2 (and other models routed through the local proxy)
+     * sometimes end a turn with ~20-266 output tokens and ZERO
+     * `agent_message_chunk` text after executing real tools (git commits, a
+     * `vsce` package+install deploy). The adapter faithfully forwards the
+     * model's `stop=end_turn`, so from the UI it looks like codex "gave up" —
+     * the work actually happened, but the user can't tell and is forced to
+     * type "go on" to get an acknowledgement. This is the codex-acp analogue
+     * of ericli's premature-end_turn (fixed in ericli 51ee75b with two-layer
+     * empty-reply recovery); codex-acp has no such recovery because the
+     * underlying model did produce (tiny) output, so we can't distinguish it
+     * from a legitimate terse answer by re-asking.
+     *
+     * The safe, non-destructive response is a *warning*, not a silent
+     * re-prompt: we cannot tell a 20-token "Done." from a glitched truncation
+     * without another model round-trip, and a speculative "go on" nudge would
+     * re-send a large context (KV cache is already cold — see
+     * cachedReadTokens: 0) and could double-execute side-effecting work. So we
+     * just tell the user plainly that the turn produced little/no visible
+     * reply, mirroring the existing `createWarningEvent`/`Config warning:`
+     * pattern (plain-text `agent_message_chunk`). The user then decides whether
+     * to nudge — which is exactly what they were doing manually, now prompted.
+     *
+     * Guarded so it only fires on the real pattern: at least one tool ran AND
+     * delivered assistant text is below {@link SHORT_OUTPUT_TEXT_THRESHOLD}.
+     * A turn with substantive text (the normal case) or a turn with no tools
+     * (e.g. a pure "I can't do that" refusal) never trips it.
+     */
+    private async maybeEmitShortOutputNotice(): Promise<void> {
+        if (this.turnToolCallCount === 0) {
+            return;
+        }
+        if (this.turnDeliveredTextChars >= CodexEventHandler.SHORT_OUTPUT_TEXT_THRESHOLD) {
+            return;
+        }
+        const toolCount = this.turnToolCallCount;
+        const textChars = this.turnDeliveredTextChars;
+        const notice =
+            textChars === 0
+                ? `Turn ended after ${toolCount} tool call(s) with no visible reply. `
+                    + `The work likely completed, but the model produced no acknowledgement text. `
+                    + `Send "go on" (or a follow-up) if you expected a summary.`
+                : `Turn ended after ${toolCount} tool call(s) with only ${textChars} character(s) of reply. `
+                    + `The model may have truncated its summary. Send "go on" (or a follow-up) `
+                    + `if you expected a fuller response.`;
+        await this.session.update(createAgentTextMessageChunk(notice + "\n\n"));
+        logger.log("Short-output turn detected; emitted notice", {
+            toolCalls: toolCount,
+            deliveredTextChars: textChars,
+        });
     }
 
     /**
@@ -274,10 +352,15 @@ export class CodexEventHandler {
                 return await this.createErrorEvent(notification.params);
             case "turn/started":
                 this.sessionState.currentTurnId = notification.params.turn.id;
+                // Fresh counters for the new turn. (resetForRetry also clears
+                // these, but a normal non-retried turn only goes through here.)
+                this.turnDeliveredTextChars = 0;
+                this.turnToolCallCount = 0;
                 return null;
             case "turn/completed":
                 await this.flushPendingPlanUpdates();
                 this.clearPlanTurnState();
+                await this.maybeEmitShortOutputNotice();
                 this.sessionState.currentTurnId = null;
                 return null;
             case "thread/tokenUsage/updated":
@@ -403,6 +486,8 @@ export class CodexEventHandler {
 
     private async createTextEvent(event: AgentMessageDeltaNotification): Promise<UpdateSessionEvent> {
         const phase = this.agentMessagePhases.get(event.itemId) ?? null;
+        // Count delivered assistant text for short-output detection.
+        this.turnDeliveredTextChars += event.delta.length;
         return createAgentTextMessageChunk(event.delta, this.currentTurnMessageId(event.itemId), createCodexMessagePhaseMeta(phase));
     }
 
@@ -499,6 +584,19 @@ export class CodexEventHandler {
     }
 
     private async createItemEvent(event: ItemStartedNotification): Promise<UpdateSessionEvent | null> {
+        // Count tool-bearing items for short-output detection (the GLM-on-proxy
+        // failure mode is "ran N real tools but said almost nothing").
+        switch (event.item.type) {
+            case "fileChange":
+            case "commandExecution":
+            case "mcpToolCall":
+            case "dynamicToolCall":
+            case "collabAgentToolCall":
+                this.turnToolCallCount += 1;
+                break;
+            default:
+                break;
+        }
         switch (event.item.type) {
             case "fileChange":
                 return await createFileChangeUpdate(event.item);
