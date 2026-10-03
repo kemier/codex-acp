@@ -54,6 +54,18 @@ export function getLlamaServerUrl(): string | null {
 }
 
 /**
+ * Auth header for the slot endpoint. llama.cpp's /slots is unauthenticated, but
+ * Strata gates it behind the same API key as the chat API. Read the key from
+ * CODEX_SLOT_CACHE_API_KEY, falling back to the key Codex already uses.
+ */
+function slotAuthHeaders(): Record<string, string> {
+    const key = process.env["CODEX_SLOT_CACHE_API_KEY"]
+        || process.env["CODEX_API_KEY"]
+        || process.env["OPENAI_API_KEY"];
+    return key ? {Authorization: `Bearer ${key}`} : {};
+}
+
+/**
  * Extract the llama-server base URL (without /v1 suffix) from Codex
  * config.toml content. Resolves the top-level `model_provider` key into
  * the matching `[model_providers.<id>]` section and reads its `base_url`.
@@ -127,7 +139,7 @@ export async function saveSlotCache(
     try {
         const res = await fetch(`${base}/slots/${slotId}?action=save`, {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
+            headers: {"Content-Type": "application/json", ...slotAuthHeaders()},
             body: JSON.stringify({filename}),
             signal: AbortSignal.timeout(SAVE_TIMEOUT_MS),
         });
@@ -191,7 +203,7 @@ export async function restoreSlotCache(
     try {
         const res = await fetch(`${base}/slots/${slotId}?action=restore`, {
             method: "POST",
-            headers: {"Content-Type": "application/json"},
+            headers: {"Content-Type": "application/json", ...slotAuthHeaders()},
             body: JSON.stringify({filename}),
             signal: AbortSignal.timeout(RESTORE_TIMEOUT_MS),
         });
@@ -249,6 +261,7 @@ export async function getSlotInfo(slotId: number = 0): Promise<{
     try {
         const res = await fetch(`${base}/slots`, {
             method: "GET",
+            headers: {...slotAuthHeaders()},
             signal: AbortSignal.timeout(SLOT_INFO_TIMEOUT_MS),
         });
         if (!res.ok) {
