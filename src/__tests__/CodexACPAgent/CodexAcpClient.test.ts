@@ -3352,8 +3352,8 @@ describe('ACP server test', { timeout: 40_000 }, () => {
         expect(turnStartSpy).toHaveBeenCalledWith(expect.objectContaining({ summary: "auto" }));
     });
 
-    it ('should reject prompt with images when model does not support image input', async () => {
-        const { mockFixture } = setupPromptFixture({
+    it ('should degrade prompt with images to text notes when model does not support image input', async () => {
+        const { mockFixture, turnStartSpy } = setupPromptFixture({
             supportedInputModalities: ["text"],
         });
 
@@ -3362,8 +3362,16 @@ describe('ACP server test', { timeout: 40_000 }, () => {
             { type: "image", mimeType: "image/png", data: "abc123", uri: "https://example.com/image.png" },
         ];
 
+        // No longer rejected: the prompt proceeds with the image block replaced
+        // by a text note (graceful degradation on a text-only model).
         await expect(mockFixture.getCodexAcpAgent().prompt({ sessionId: "id", prompt }))
-            .rejects.toThrow("Invalid request");
+            .resolves.toBeDefined();
+
+        // The turn start input must carry a text note, not the raw image block.
+        const turnStartArg = turnStartSpy.mock.calls[0]?.[0] as any;
+        const input = turnStartArg?.input ?? [];
+        expect(input.some((b: any) => b.type === "image")).toBe(false);
+        expect(input.some((b: any) => b.type === "text" && /does NOT support image input/i.test(b.text))).toBe(true);
     });
 
     it ('should accept prompt with images when model supports image input', async () => {

@@ -212,9 +212,8 @@ describe('_session/steering', () => {
         })).rejects.toThrow(RequestError);
     });
 
-    it('rejects image input when the model does not support it', async () => {
+    it('degrades image input to a text note when the model does not support it', async () => {
         const {mockFixture} = startActiveTurn({supportedInputModalities: ["text"]});
-        const turnSteerSpy = vi.spyOn(mockFixture.getCodexAppServerClient(), "turnSteer");
 
         const image: acp.ContentBlock = {
             type: "image",
@@ -222,13 +221,11 @@ describe('_session/steering', () => {
             data: "abc123",
         };
 
-        const error = await mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
+        // No longer rejected: the steer resolves (graceful degradation on a
+        // text-only model) instead of throwing RequestError.invalidRequest.
+        await expect(mockFixture.getCodexAcpAgent().extMethod(SESSION_STEERING_METHOD, {
             sessionId: "session-id",
             prompt: [image],
-        }).catch((err: unknown) => err);
-
-        expect(error).toBeInstanceOf(RequestError);
-        expect((error as RequestError).data).toContain("does not support image input");
-        expect(turnSteerSpy).not.toHaveBeenCalled();
+        })).resolves.toBeDefined();
     });
 });

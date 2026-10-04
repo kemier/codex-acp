@@ -1,5 +1,8 @@
 import * as acp from "@agentclientprotocol/sdk";
 import {RequestError, type SessionId, type SessionModeState} from "@agentclientprotocol/sdk";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 import {CodexEventHandler, type CompletedPlan} from "./CodexEventHandler";
 import {CodexApprovalHandler} from "./CodexApprovalHandler";
 import {CodexElicitationHandler} from "./CodexElicitationHandler";
@@ -107,6 +110,80 @@ const REVISE_PLAN_OPTION_ID = "revise_plan";
 
 /** Why an in-flight turn was interrupted; surfaced in log lines. */
 type InterruptRequestName = "Cancel" | "Close" | "Plan mode switch" | "New prompt";
+
+const MIME_TO_EXT: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+    "image/svg+xml": "svg",
+};
+
+/**
+ * Graceful degradation for image prompts on a text-only model.
+ *
+ * Instead of hard-rejecting the turn (RequestError.invalidRequest), persist
+ * each ACP image block to a temp file and replace it with a text note that
+ * tells the model the image(s) were attached but the current model cannot see
+ * them, along with the on-disk path(s). The turn proceeds; the model (or the
+ * user, via a follow-up) can act on the paths — e.g. re-attach after switching
+ * to a vision model, or analyze with a tool that routes to one.
+ *
+ * Mirrors ericli's writePromptImagesToTemp + buildNonVisionImageReminder
+ * philosophy: never lose the user's input, degrade instead of fail.
+ *
+ * Returns the rewritten prompt (image blocks → text notes) and the list of
+ * temp file paths written (for logging / cleanup).
+ */
+function degradeImagePromptForTextOnlyModel(
+    prompt: acp.ContentBlock[],
+    sessionId: string,
+): { prompt: acp.ContentBlock[]; tempPaths: string[] } {
+    const tempPaths: string[] = [];
+    let imageIdx = 0;
+    const out: acp.ContentBlock[] = [];
+    for (const block of prompt) {
+        if (block.type !== "image") {
+            out.push(block);
+            continue;
+        }
+        // Resolve the base64 payload + mime from either an inline data block or
+        // a data: URI on a resource_link-style image.
+        let data: string | undefined;
+        let mimeType: string | undefined;
+        if (typeof (block as any).data === "string") {
+            data = (block as any).data;
+            mimeType = (block as any).mimeType;
+        } else if (typeof (block as any).uri === "string" && (block as any).uri.startsWith("data:")) {
+            const m = (block as any).uri.match(/^data:(image\/\w+);base64,(.+)$/);
+            if (m) { mimeType = m[1]; data = m[2]; }
+        }
+        if (!data) {
+            // No decodable payload — keep as a bare note so the model knows an
+            // image was intended but we couldn't persist it.
+            out.push({ type: "text", text: `[Attached image #${++imageIdx} could not be processed: the current model does not support image input and no decodable payload was available.]` } as acp.ContentBlock);
+            continue;
+        }
+        const ext = MIME_TO_EXT[mimeType ?? ""] ?? "png";
+        let tempPath: string | null = null;
+        try {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), `codex-acp-img-${sessionId.slice(0, 8)}-`));
+            tempPath = path.join(dir, `image-${imageIdx + 1}.${ext}`);
+            fs.writeFileSync(tempPath, Buffer.from(data, "base64"));
+            tempPaths.push(tempPath);
+        } catch (err) {
+            logger.log("Failed to persist attached image to temp file", { error: String(err) });
+        }
+        const pathNote = tempPath ? `Saved to: ${tempPath}` : "(could not persist to disk)";
+        out.push({
+            type: "text",
+            text: `[Attached image #${++imageIdx} (${mimeType ?? "unknown"}). The current model does NOT support image input, so you cannot see it. ${pathNote}. If you need to analyze it, ask the user to switch to a vision-capable model and re-attach, or use a tool that routes to one.]`,
+        } as acp.ContentBlock);
+    }
+    return { prompt: out, tempPaths };
+}
 
 export interface SessionState {
     sessionId: string,
@@ -1100,7 +1177,7 @@ export class CodexAcpServer {
             prompt: params.prompt,
         });
         const sessionState = this.getSessionState(params.sessionId);
-        this.assertSteerInputSupported(params, sessionState);
+        this.degradeSteerInputIfTextOnly(params, sessionState);
 
         const turnId = await this.getSteerableTurnId(sessionState);
         if (turnId) {
@@ -1114,13 +1191,19 @@ export class CodexAcpServer {
     }
 
     /**
-     * Rejects a steering prompt whose content the active model cannot accept
-     * (currently: image blocks on a text-only model).
+     * Gracefully degrade a steering prompt whose image blocks the active model
+     * cannot accept (text-only model). Instead of rejecting the steer, persist
+     * the images to temp files and replace the image blocks with text notes so
+     * the turn proceeds and the model/user know what was attached.
      */
-    private assertSteerInputSupported(params: SessionSteerRequest, sessionState: SessionState): void {
+    private degradeSteerInputIfTextOnly(params: SessionSteerRequest, sessionState: SessionState): void {
         const hasImage = params.prompt.some(block => block.type === "image");
         if (hasImage && !sessionState.supportedInputModalities.includes("image")) {
-            throw RequestError.invalidRequest("The current model does not support image input");
+            logger.log("Steer on text-only model: degrading image blocks to text notes", {
+                sessionId: params.sessionId,
+            });
+            const { prompt } = degradeImagePromptForTextOnlyModel(params.prompt, params.sessionId);
+            params.prompt = prompt;
         }
     }
 
@@ -2217,8 +2300,21 @@ export class CodexAcpServer {
                 });
             }
 
+            // Graceful degradation: if the active model is text-only but the
+            // prompt carries image blocks, persist the images to temp files and
+            // replace the blocks with text notes instead of rejecting the turn.
+            // This keeps the video-frame fallback (and any image attach) working
+            // on text-only models — the turn proceeds and the model/user are told
+            // what was attached and where it lives on disk.
             if (!sessionState.supportedInputModalities.includes("image") && params.prompt.some(b => b.type === "image")) {
-                throw RequestError.invalidRequest("The current model does not support image input");
+                logger.log("Prompt on text-only model: degrading image blocks to text notes", {
+                    sessionId: params.sessionId,
+                });
+                const { prompt, tempPaths } = degradeImagePromptForTextOnlyModel(params.prompt, params.sessionId);
+                params.prompt = prompt;
+                if (tempPaths.length > 0) {
+                    logger.log("Persisted attached images to temp files", { sessionId: params.sessionId, tempPaths });
+                }
             }
 
             // Proactive model-switch compaction guard.
