@@ -1,5 +1,7 @@
 # ACP adapter for Codex CLI
 
+> Public release. Published publicly under the Apache License 2.0 (see [LICENSE](LICENSE)).
+
 [![npm version](https://img.shields.io/npm/v/%40agentclientprotocol%2Fcodex-acp)](https://www.npmjs.com/package/@agentclientprotocol/codex-acp)
 
 Use [OpenAI Codex](https://github.com/openai/codex) from [Agent Client Protocol](https://agentclientprotocol.com/) clients.
